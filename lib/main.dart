@@ -22,6 +22,8 @@ import 'package:oktoast/oktoast.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'get_init.dart';
+import 'local_recovery/recovery_flags.dart';
+import 'local_recovery/recovery_page.dart';
 import 'widget/desktop.dart';
 
 Future<void> main() async {
@@ -33,6 +35,12 @@ Future<void> main() async {
   Get.lazyPut(() => LogService(), fenix: true);
 
   await Global.init();
+  if (localRecoveryTest) {
+    await hiveHelper.setDownloadTaskMigration(true);
+    // Only this foreground test window stays awake; no global device setting.
+    await FlutterWindowManagerPlus.addFlags(
+        FlutterWindowManagerPlus.FLAG_KEEP_SCREEN_ON);
+  }
   getinit();
   Global.proxyInit();
 
@@ -206,9 +214,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             ),
           ),
 
-          getPages: AppPages.routes,
+          getPages: [
+            ...AppPages.routes,
+            if (localRecoveryEnabled)
+              GetPage(
+                  name: '/local-recovery',
+                  page: () => const LocalRecoveryPage()),
+          ],
           defaultTransition: Transition.cupertino,
-          initialRoute: EHRoutes.root,
+          initialRoute: localRecoveryTest ? '/local-recovery' : EHRoutes.root,
           theme: themeService.themeData,
           locale: localeService.locale,
           enableLog: false,

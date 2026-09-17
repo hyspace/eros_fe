@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/local_recovery/recovery_flags.dart';
 import 'package:eros_fe/utils/saf_helper.dart';
 import 'package:get/get.dart';
 import 'package:path/path.dart' as path;
@@ -107,6 +108,7 @@ class DownloadPathManager {
   }
 
   Future<void> allowMediaScan(bool allow) async {
+    if (localRecoveryTest) return; // Never touch the shared library in tests.
     final downloadPath = await getGalleryDownloadPath();
 
     if (Platform.isAndroid) {

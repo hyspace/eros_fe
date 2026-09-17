@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/local_recovery/recovery_flags.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:eros_fe/store/db/entity/gallery_task.dart';
 import 'package:eros_fe/utils/saf_helper.dart';
@@ -14,6 +15,7 @@ import 'package:shared_storage/shared_storage.dart' as ss;
 class StorageAdapter {
   /// 写入元数据文件，用于恢复任务
   Future<void> writeTaskInfoFile(GalleryTask? galleryTask) async {
+    if (localRecoveryTest) return; // Sidecars remain untouched by the test app.
     if (galleryTask == null) {
       return;
     }

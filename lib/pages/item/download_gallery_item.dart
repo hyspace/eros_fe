@@ -7,6 +7,7 @@ import 'package:eros_fe/common/controller/webdav_controller.dart';
 import 'package:eros_fe/common/service/theme_service.dart';
 import 'package:eros_fe/const/theme_colors.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/local_recovery/recovery_flags.dart';
 import 'package:eros_fe/network/api.dart';
 import 'package:eros_fe/pages/tab/controller/download_view_controller.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
@@ -112,8 +113,33 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
         final List<GalleryImageTask> imageTasks =
             await controller.getImageTasks(galleryTask.gid);
         final GalleryTask? gTask = controller.galleryTaskMap[galleryTask.gid];
-        if (gTask == null || gTask.status != TaskStatus.complete.value) {
+        if (gTask == null ||
+            (gTask.status != TaskStatus.complete.value &&
+                recoveryNote(gTask.jsonString) == null)) {
           return;
+        }
+        final warning = recoveryWarning(gTask.jsonString);
+        if (warning.isNotEmpty) {
+          if (!context.mounted) return;
+          final read = await showCupertinoDialog<bool>(
+            context: context,
+            builder: (ctx) => CupertinoAlertDialog(
+              title: const Text('阅读现有本地页面'),
+              content: Text('$warning。仅打开目前存在的图片，不会自动下载或改动原文件。'),
+              actions: [
+                CupertinoDialogAction(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('取消')),
+                CupertinoDialogAction(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('阅读现有页面')),
+              ],
+            ),
+          );
+          if (read != true) return;
+        }
+        if (localRecoveryEnabled) {
+          imageTasks.sort((a, b) => a.ser.compareTo(b.ser));
         }
 
         late final List<String> pics;
@@ -125,8 +151,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
 
             late final String parentPath;
             if (dirPath.contains('/document/')) {
-              parentPath = dirPath.substring(
-                  0, dirPath.lastIndexOf('/document/'));
+              parentPath =
+                  dirPath.substring(0, dirPath.lastIndexOf('/document/'));
             } else {
               parentPath = dirPath.substring(0, dirPath.lastIndexOf('%2F'));
             }
@@ -378,6 +404,10 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
   }
 
   Widget _buildDownloadCtl(BuildContext context) {
+    final warning = recoveryWarning(galleryTask.jsonString);
+    if (warning.isNotEmpty) {
+      return Text(warning, style: const TextStyle(fontSize: 11));
+    }
     if (errInfo != null && errInfo!.isNotEmpty) {
       return Text(
         errInfo ?? '',
@@ -463,7 +493,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
         child: CupertinoButton(
           padding: buttonPadding,
           minSize: minSize,
-          child: const FaIcon(FontAwesomeIcons.pause,
+          child: const FaIcon(
+            FontAwesomeIcons.pause,
             size: iconSize,
           ),
           onPressed: () {
@@ -478,7 +509,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
         child: CupertinoButton(
           padding: buttonPadding,
           minSize: minSize,
-          child: const FaIcon(FontAwesomeIcons.check,
+          child: const FaIcon(
+            FontAwesomeIcons.check,
             size: iconSize,
           ),
           onPressed: () {},
@@ -491,7 +523,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
         child: CupertinoButton(
           padding: buttonPadding,
           minSize: minSize,
-          child: const FaIcon(FontAwesomeIcons.play,
+          child: const FaIcon(
+            FontAwesomeIcons.play,
             size: iconSize,
           ),
           onPressed: () {
@@ -503,7 +536,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
       TaskStatus.failed: CupertinoButton(
         padding: buttonPadding,
         minSize: minSize,
-        child: const FaIcon(FontAwesomeIcons.play,
+        child: const FaIcon(
+          FontAwesomeIcons.play,
           size: iconSize,
         ),
         onPressed: () {
@@ -514,7 +548,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
       TaskStatus.canceled: CupertinoButton(
         padding: buttonPadding,
         minSize: minSize,
-        child: const FaIcon(FontAwesomeIcons.redo,
+        child: const FaIcon(
+          FontAwesomeIcons.redo,
           size: iconSize,
         ),
         onPressed: () {

@@ -6,6 +6,8 @@ import 'package:eros_fe/common/service/layout_service.dart';
 import 'package:eros_fe/common/service/locale_service.dart';
 import 'package:eros_fe/const/locale.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/local_recovery/recovery_flags.dart';
+import 'package:eros_fe/local_recovery/recovery_page.dart';
 import 'package:eros_fe/pages/setting/setting_items/selector_Item.dart';
 import 'package:eros_fe/pages/setting/webview/mode.dart';
 import 'package:eros_fe/utils/import_export.dart';
@@ -42,6 +44,17 @@ class ListViewAdvancedSetting extends StatelessWidget {
 
     return MultiSliver(
       children: [
+        if (localRecoveryEnabled && Platform.isAndroid)
+          SliverCupertinoListSection.listInsetGrouped(
+            children: [
+              EhCupertinoListTile(
+                title: const Text('本地下载恢复与备份'),
+                subtitle: const Text('去重恢复、校验数据库、导出最新检查点'),
+                trailing: const CupertinoListTileChevron(),
+                onTap: () => Get.to(() => const LocalRecoveryPage()),
+              ),
+            ],
+          ),
         CupertinoListSection.insetGrouped(
           children: [_buildLanguageItem(context)],
         ),

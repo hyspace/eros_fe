@@ -16,6 +16,7 @@ import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/component/quene_task/quene_task.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/local_recovery/recovery_flags.dart';
 import 'package:eros_fe/network/app_dio/pdio.dart';
 import 'package:eros_fe/pages/gallery/controller/gallery_page_controller.dart';
 import 'package:eros_fe/pages/tab/controller/download_view_controller.dart';
@@ -129,6 +130,10 @@ class DownloadController extends GetxController {
     bool downloadOri = false,
     String? showKey,
   }) async {
+    if (localRecoveryTest) {
+      showToast('独立测试版只读漫画文件，不能创建下载。');
+      return;
+    }
     int gid0 = 0;
     String token0 = '';
     if (gid == null || token == null) {
@@ -244,6 +249,12 @@ class DownloadController extends GetxController {
 
   /// 恢复任务
   Future<void> galleryTaskResume(int gid) async {
+    if (localRecoveryTest ||
+        (localRecoveryEnabled &&
+            (dState.galleryTaskMap[gid]?.token.isEmpty ?? false))) {
+      showToast('独立测试版不下载；缺少身份信息的本地项不能续传。');
+      return;
+    }
     logger.d('画廊任务恢复: gid=$gid');
 
     // 先标记为enqueued，确保槽位管理器能正确处理此任务
@@ -262,6 +273,10 @@ class DownloadController extends GetxController {
 
   /// 重下任务
   Future<void> galleryTaskRestart(int gid) async {
+    if (localRecoveryTest) {
+      showToast('独立测试版只读漫画文件，不能重新下载。');
+      return;
+    }
     loggerSimple.d('重启任务开始: gid=$gid');
 
     // 先尝试暂停正在进行的任务（如果有）
@@ -341,7 +356,7 @@ class DownloadController extends GetxController {
 
     await taskManager.removeDownloadGalleryTask(
       gid: gid,
-      shouldDeleteContent: shouldDeleteContent,
+      shouldDeleteContent: shouldDeleteContent && !localRecoveryTest,
     );
   }
 
@@ -437,6 +452,7 @@ class DownloadController extends GetxController {
     int? groupCount,
     List<GalleryImage>? images,
   }) {
+    if (localRecoveryTest) return;
     logger.d('添加画廊任务: gid=${galleryTask.gid}, 标题=${galleryTask.title}');
     dState.taskCancelTokens[galleryTask.gid] = TaskCancelToken();
     final showKey = galleryTask.showKey;

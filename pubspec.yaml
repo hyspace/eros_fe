@@ -8,6 +8,8 @@ environment:
   sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
+  # Local recovery checksums; already present transitively in the pinned lockfile.
+  crypto: 3.0.6
   flutter:
     sdk: flutter
 
