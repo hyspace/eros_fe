@@ -11,13 +11,11 @@ import 'package:eros_fe/common/controller/download/download_task_manager.dart'
 import 'package:eros_fe/common/controller/download/gallery_slot_manager.dart';
 import 'package:eros_fe/common/controller/download/image_download_processor.dart';
 import 'package:eros_fe/common/controller/download/storage_adapter.dart';
-import 'package:eros_fe/common/service/controller_tag_service.dart';
 import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/component/quene_task/quene_task.dart';
 import 'package:eros_fe/index.dart';
 import 'package:eros_fe/network/app_dio/pdio.dart';
-import 'package:eros_fe/pages/gallery/controller/gallery_page_controller.dart';
 import 'package:eros_fe/pages/tab/controller/download_view_controller.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:eros_fe/store/db/entity/gallery_task.dart';
@@ -27,6 +25,7 @@ import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
+import 'package:synchronized/synchronized.dart';
 
 import 'cache_controller.dart';
 import 'download_state.dart'
@@ -53,6 +52,7 @@ typedef TaskStatus = dtm.TaskStatus;
 
 class DownloadController extends GetxController {
   final DownloadState dState = DownloadState();
+  final Lock _completionLock = Lock();
 
   final EhSettingService ehSettingService = Get.find();
   final CacheController cacheController = Get.find();
@@ -128,6 +128,8 @@ class DownloadController extends GetxController {
     String? uploader,
     bool downloadOri = false,
     String? showKey,
+    List<GalleryImage>? images,
+    int? groupCount,
   }) async {
     int gid0 = 0;
     String token0 = '';
@@ -181,7 +183,8 @@ class DownloadController extends GetxController {
     );
 
     logger.d('add NewTask ${galleryTask.toString()}');
-    isarHelper.putGalleryTaskIsolate(galleryTask, replaceOnConflict: false);
+    await isarHelper.putGalleryTaskIsolate(galleryTask,
+        replaceOnConflict: false);
     dState.galleryTaskMap[galleryTask.gid] = galleryTask;
     downloadViewAnimateListAdd();
     showToast('${galleryTask.gid} Download task start');
@@ -189,10 +192,8 @@ class DownloadController extends GetxController {
     // 使用_addGalleryTask添加到槽位管理器
     _addGalleryTask(
       galleryTask,
-      groupCount: Get.find<GalleryPageController>(tag: pageCtrlTag)
-          .gState
-          .firstPageImage
-          .length,
+      images: images,
+      groupCount: groupCount,
     );
   }
 
@@ -504,7 +505,7 @@ class DownloadController extends GetxController {
   }
 
   int _initDownloadMapByGid(int gid, {List<GalleryImage>? images}) {
-    dState.downloadMap[gid] = images ?? [];
+    dState.downloadMap[gid] = images?.toList() ?? [];
     return dState.downloadMap[gid]?.length ?? 0;
   }
 
@@ -702,7 +703,7 @@ class DownloadController extends GetxController {
     logger.d('更新图片任务到数据库: gid=${galleryTask.gid}, 更新数量=$putCount');
 
     logger.d('更新任务状态为running: gid=${galleryTask.gid}');
-    galleryTaskUpdateStatus(galleryTask.gid, TaskStatus.running);
+    await galleryTaskUpdateStatus(galleryTask.gid, TaskStatus.running);
 
     _clearErrInfo(galleryTask.gid, updateView: false);
 
@@ -751,15 +752,8 @@ class DownloadController extends GetxController {
         logger.d('获取首页图片数量结果: gid=${galleryTask.gid}, fileCount=$groupCount');
       }
 
-      final showKey = dState.showKeyMap[galleryTask.gid];
-
-      if (index > 0 && showKey == null) {
-        logger.d('等待showKey: gid=${galleryTask.gid}, index=$index');
-        dState.showKeyCompleteMap[galleryTask.gid] = Completer<bool>.sync();
-        await dState.showKeyCompleteMap[galleryTask.gid]?.future;
-        logger.d(
-            '获取到showKey: gid=${galleryTask.gid}, showKey=${dState.showKeyMap[galleryTask.gid]}');
-      }
+      // 缓存命中不需要 showKey；未命中且缺少 showKey 时，图片解析会回退 HTML。
+      // 不能等待首张图一定产生 showKey，否则首张图直接复用缓存时可能一直阻塞。
 
       dState.executor.scheduleTask(() async {
         logger.d('开始处理图片任务: gid=${galleryTask.gid}, ser=$itemSer');
@@ -857,7 +851,18 @@ class DownloadController extends GetxController {
   }
 
   // 下载完成回调
-  Future _onDownloadComplete(String fileName, int gid, int itemSer) async {
+  Future<void> _onDownloadComplete(
+      String fileName, int gid, int itemSer) async {
+    // 多张缓存可能同时命中，串行更新总进度，防止旧结果覆盖完成状态。
+    await _completionLock
+        .synchronized(() => _updateCompletedImage(fileName, gid, itemSer));
+  }
+
+  Future<void> _updateCompletedImage(
+      String fileName, int gid, int itemSer) async {
+    if (dState.galleryTaskMap[gid]?.status == TaskStatus.complete.value) {
+      return;
+    }
     loggerSimple.d('画廊项目下载完成: gid=$gid, 序号=$itemSer, 文件=$fileName');
 
     // 下载完成 更新数据库明细
@@ -894,18 +899,16 @@ class DownloadController extends GetxController {
       if (task.fileCount == listComplete.length) {
         loggerSimple
             .d('画廊任务全部完成: gid=$gid, ${listComplete.length}/${task.fileCount}');
-        galleryTaskComplete(gid);
+        await galleryTaskComplete(gid);
       } else {
         loggerSimple
             .d('画廊任务部分完成: gid=$gid, ${listComplete.length}/${task.fileCount}');
+        await isarHelper.putGalleryTask(task);
       }
     } else {
       logger.e('无法更新画廊任务: gid=$gid, 任务不存在');
     }
 
-    if (task != null) {
-      await isarHelper.putGalleryTask(task);
-    }
     _updateDownloadView(['DownloadGalleryItem_$gid']);
   }
 

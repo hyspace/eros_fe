@@ -103,6 +103,15 @@ class DownloadMonitor {
     int periodSeconds = 1,
     Function? onRetryNeededCallback,
   }) {
+    // 从缓存复制也会推进完成页数，不能因网络流量为零而暂停并重试。
+    final completed = dState.curComplete[gid] ?? 0;
+    final previousCompleted = dState.preComplete[gid] ?? 0;
+    dState.preComplete[gid] = completed;
+    if (completed > previousCompleted) {
+      dState.noSpeed[gid] = 0;
+      return;
+    }
+
     // 获取当前总下载量
     final int totCurCount = dState.downloadCounts.entries
         .where((element) => element.key.startsWith('${gid}_'))

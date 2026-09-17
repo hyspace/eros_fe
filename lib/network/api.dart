@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io' as io;
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart' as dio;
@@ -414,49 +415,64 @@ class Api {
     required String imageUrl,
     required String parentPath,
     required String fileNameWithoutExtension,
+    String? cacheKey,
+    CancelToken? cancelToken,
   }) async {
-    if (!(await cachedImageExists(imageUrl))) {
-      return null;
+    void checkCancelled() {
+      if (cancelToken?.isCancelled ?? false) {
+        throw cancelToken!.cancelError!;
+      }
     }
 
-    logger.d('fileNameWithoutExtension $fileNameWithoutExtension');
+    checkCancelled();
+    // 阅读使用自定义 key；旧版本的 URL 缓存仍作为回退。
+    final keys = <String?>[
+      if (cacheKey != null && cacheKey.isNotEmpty) cacheKey,
+      if (imageUrl.isNotEmpty) null,
+    ];
+    for (final key in keys) {
+      final imageFile = await getCachedImageFile(imageUrl, cacheKey: key);
+      if (imageFile == null) {
+        continue;
+      }
 
-    final imageFile = await getCachedImageFile(imageUrl);
-    if (imageFile == null) {
-      logger.d('not from cache \n$imageUrl');
-      return null;
+      late final Uint8List bytes;
+      try {
+        bytes = await imageFile.readAsBytes();
+      } on FileSystemException {
+        // 缓存可能在查找后被系统或用户清理，不影响网络回退。
+        continue;
+      }
+      final mimeType = lookupMimeType('', headerBytes: bytes.take(12).toList());
+      if (bytes.isEmpty || mimeType == null || !mimeType.startsWith('image/')) {
+        continue;
+      }
+      checkCancelled();
+
+      final ext = extensionFromMime(mimeType) ?? mimeType.split('/').last;
+      final fileName = '$fileNameWithoutExtension.$ext';
+      logger.d('from cache \n$imageUrl, key: $key');
+
+      if (parentPath.isContentUri) {
+        final result = await ss.createFileAsBytes(
+          Uri.parse(parentPath),
+          mimeType: mimeType,
+          displayName: fileName,
+          bytes: bytes,
+        );
+        if (result == null) {
+          throw FileSystemException('Failed to save cached image', parentPath);
+        }
+        checkCancelled();
+        return result.name ?? fileName;
+      } else {
+        final toFilePath = path.join(parentPath, fileName);
+        await File(toFilePath).writeAsBytes(bytes, flush: true);
+        checkCancelled();
+        return toFilePath;
+      }
     }
-
-    logger.d('from cache \n$imageUrl');
-
-    final bytes = await imageFile.readAsBytes();
-    final mimeType =
-        lookupMimeType(imageFile.path, headerBytes: bytes.take(8).toList());
-    logger.d('mimeType $mimeType');
-    final ext = mimeType?.split('/').last ?? 'jpg';
-    final fileName = '$fileNameWithoutExtension.$ext';
-
-    if (parentPath.isContentUri) {
-      // SAF 方式
-
-      // await safCreateDirectory(Uri.parse(parentPath));
-
-      final result = await ss.createFileAsBytes(
-        Uri.parse(parentPath),
-        mimeType: mimeType ?? '',
-        displayName: fileName,
-        bytes: bytes,
-      );
-      logger.d('save to content:// result ${result?.uri}');
-      return fileName;
-    } else {
-      // 普通方式
-      final toFilePath = path.join(parentPath, fileName);
-      final toFile = File(toFilePath);
-      // write file
-      await toFile.writeAsBytes(bytes);
-      return toFilePath;
-    }
+    return null;
   }
 
   /// 由api获取画廊图片的信息

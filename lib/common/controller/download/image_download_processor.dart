@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,7 +11,6 @@ import 'package:eros_fe/index.dart';
 import 'package:eros_fe/network/api.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
-import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:shared_storage/shared_storage.dart' as ss;
 import 'package:sprintf/sprintf.dart' as sp;
@@ -44,7 +44,7 @@ class ImageDownloadProcessor {
     bool downloadOrigImage = false,
     bool reDownload = false,
     CancelToken? cancelToken,
-    ValueChanged<String>? onDownloadCompleteWithFileName,
+    FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
     String? showKey,
     Future<void> Function(
             int gid, GalleryImage image, String? fileName, int? status)?
@@ -53,6 +53,38 @@ class ImageDownloadProcessor {
     loggerSimple.t('${preImage.ser} start');
     if (reDownload) {
       logger.t('${preImage.ser} redownload ');
+    }
+    if (cancelToken?.isCancelled ?? false) {
+      throw cancelToken!.cancelError!;
+    }
+
+    // 先尝试阅读时已缓存的版本，不必重新解析图片页面或获取下载链接。
+    // 原图地址未知时不能用重采样图代替，交给后续解析流程处理。
+    final cachedUrl =
+        downloadOrigImage ? preImage.originImageUrl : preImage.imageUrl;
+    if (!reDownload && cachedUrl != null && cachedUrl.isNotEmpty) {
+      final fileName = imageTask?.filePath;
+      final savedPath = await Api.saveImageFromExtendedCache(
+        imageUrl: cachedUrl,
+        cacheKey: _cacheKey(preImage, cachedUrl),
+        parentPath: downloadParentPath,
+        fileNameWithoutExtension: fileName != null && fileName.isNotEmpty
+            ? path.basenameWithoutExtension(fileName)
+            : genFileNameWithoutExtension(preImage, maxSer),
+        cancelToken: cancelToken,
+      );
+      if (savedPath != null) {
+        _updateShowKey(gid, preImage.showKey);
+        resetReDownloadCount(gid, preImage.ser);
+        await putImageTaskCallback?.call(
+          gid,
+          preImage,
+          path.basename(savedPath),
+          TaskStatus.complete.value,
+        );
+        await onDownloadCompleteWithFileName?.call(path.basename(savedPath));
+        return;
+      }
     }
 
     // 获取下载URL和更新后的图片信息
@@ -66,10 +98,7 @@ class ImageDownloadProcessor {
       cancelToken: cancelToken,
       showKey: showKey,
       updateShowKeyCallback: (gid, showKey, {updateDB}) {
-        dState.showKeyMap[gid] = showKey;
-        if (!(dState.showKeyCompleteMap[gid]?.isCompleted ?? false)) {
-          dState.showKeyCompleteMap[gid]?.complete(true);
-        }
+        _updateShowKey(gid, showKey);
       },
     );
 
@@ -89,6 +118,8 @@ class ImageDownloadProcessor {
         downloadInfo.imageUrl,
         downloadParentPath,
         downloadInfo.fileNameWithoutExtension,
+        cacheKey: _cacheKey(downloadInfo.updatedImage, downloadInfo.imageUrl),
+        useCache: !reDownload,
         cancelToken: cancelToken,
         onDownloadCompleteWithFileName: (fileName) async {
           // 下载成功，重置重试计数
@@ -102,7 +133,7 @@ class ImageDownloadProcessor {
               TaskStatus.complete.value,
             );
           }
-          onDownloadCompleteWithFileName?.call(fileName);
+          await onDownloadCompleteWithFileName?.call(fileName);
         },
         progressCallback: progressCallback,
       );
@@ -119,11 +150,25 @@ class ImageDownloadProcessor {
           onDownloadCompleteWithFileName,
           downloadInfo.updatedImage.sourceId,
           showKey,
+          useCache: !reDownload,
           putImageTaskCallback: putImageTaskCallback,
         );
       } else {
         rethrow;
       }
+    }
+  }
+
+  String? _cacheKey(GalleryImage image, String url) =>
+      (image.href?.isNotEmpty ?? false) ? image.getCacheKey(url) : null;
+
+  void _updateShowKey(int gid, String? showKey) {
+    if (showKey == null || showKey.isEmpty) {
+      return;
+    }
+    dState.showKeyMap[gid] = showKey;
+    if (!(dState.showKeyCompleteMap[gid]?.isCompleted ?? false)) {
+      dState.showKeyCompleteMap[gid]?.complete(true);
     }
   }
 
@@ -146,7 +191,9 @@ class ImageDownloadProcessor {
     late String fileNameWithoutExtension;
 
     // 存在imageTask的 用原url下载
-    final bool useOldUrl = imageTask != null &&
+    // 任务表记录的是 imageUrl（重采样图），不能用于恢复原图下载。
+    final bool useOldUrl = !downloadOrigImage &&
+        imageTask != null &&
         imageTask.imageUrl != null &&
         (imageTask.imageUrl?.isNotEmpty ?? false);
     final String? imageUrlFromTask = imageTask?.imageUrl;
@@ -156,7 +203,7 @@ class ImageDownloadProcessor {
       logger.t('使用原有url下载 ${preImage.ser} DL $imageUrlFromTask');
 
       imageUrl = imageUrlFromTask;
-      updatedImage = preImage;
+      updatedImage = preImage.copyWith(imageUrl: imageUrl.oN);
       if (imageTask.filePath != null && imageTask.filePath!.isNotEmpty) {
         fileNameWithoutExtension =
             path.basenameWithoutExtension(imageTask.filePath!);
@@ -257,9 +304,10 @@ class ImageDownloadProcessor {
     bool downloadOrigImage,
     CancelToken? cancelToken,
     ProgressCallback progressCallback,
-    ValueChanged<String>? onDownloadCompleteWithFileName,
+    FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
     String? sourceId,
     String? showKey, {
+    bool useCache = true,
     Function? addAllImagesCallback,
     Future<void> Function(
             int gid, GalleryImage image, String? fileName, int? status)?
@@ -294,13 +342,7 @@ class ImageDownloadProcessor {
     );
 
     // 更新 showkey
-    final resShowKey = imageFetched.showKey;
-    if (resShowKey != null) {
-      dState.showKeyMap[gid] = resShowKey;
-      if (!(dState.showKeyCompleteMap[gid]?.isCompleted ?? false)) {
-        dState.showKeyCompleteMap[gid]?.complete(true);
-      }
-    }
+    _updateShowKey(gid, imageFetched.showKey);
 
     final newImageUrl = downloadOrigImage
         ? imageFetched.originImageUrl ?? imageFetched.imageUrl!
@@ -321,6 +363,8 @@ class ImageDownloadProcessor {
       newImageUrl,
       downloadParentPath,
       fileNameWithoutExtension,
+      cacheKey: _cacheKey(imageFetched, newImageUrl),
+      useCache: useCache,
       cancelToken: cancelToken,
       onDownloadCompleteWithFileName: (fileName) async {
         // 下载成功，重置重试计数
@@ -334,7 +378,7 @@ class ImageDownloadProcessor {
             TaskStatus.complete.value,
           );
         }
-        onDownloadCompleteWithFileName?.call(fileName);
+        await onDownloadCompleteWithFileName?.call(fileName);
       },
       progressCallback: progressCallback,
     );
@@ -345,24 +389,29 @@ class ImageDownloadProcessor {
     String url,
     String parentPath,
     String fileNameWithoutExtension, {
+    String? cacheKey,
+    bool useCache = true,
     CancelToken? cancelToken,
-    ValueChanged<String>? onDownloadCompleteWithFileName,
+    FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
     ProgressCallback? progressCallback,
   }) async {
-    // 根据url读取缓存 存在的话直接将缓存写文件
-    try {
+    if (cancelToken?.isCancelled ?? false) {
+      throw cancelToken!.cancelError!;
+    }
+    // 使用与阅读一致的 key，兼容旧 URL 缓存。
+    if (useCache) {
       final filePath = await Api.saveImageFromExtendedCache(
         imageUrl: url,
+        cacheKey: cacheKey,
         parentPath: parentPath,
         fileNameWithoutExtension: fileNameWithoutExtension,
+        cancelToken: cancelToken,
       );
       if (filePath != null) {
         logger.d('从缓存读取文件 $filePath');
-        onDownloadCompleteWithFileName?.call(path.basename(filePath));
+        await onDownloadCompleteWithFileName?.call(path.basename(filePath));
         return;
       }
-    } catch (e) {
-      logger.e('$e');
     }
 
     // 缓存不存在的话下载
@@ -409,45 +458,37 @@ class ImageDownloadProcessor {
       url: url,
       savePathBuilder: savePathBuild,
       cancelToken: cancelToken,
-      onDownloadComplete: () async {
-        logger.t('onDownloadComplete');
-
-        if (parentPath.isContentUri && tempSavePath.isNotEmpty) {
-          // read file
-          final File file = File(tempSavePath);
-
-          // 限定 [0-9a-zA-Z]
-          final extension = path
-              .extension(tempSavePath)
-              .replaceAll(RegExp(r'[^0-9a-zA-Z.]'), '');
-
-          logger.t('extension $extension');
-
-          final parentUri = Uri.parse(parentPath);
-
-          // SAF write file
-          final fileName = '$fileNameWithoutExtension$extension';
-
-          file
-              .readAsBytes()
-              .then((bytes) {
-                ss.createFileAsBytes(
-                  parentUri,
-                  mimeType: '*/*',
-                  displayName: fileName,
-                  bytes: bytes,
-                );
-              })
-              .then((value) => file.delete())
-              .whenComplete(
-                  () => onDownloadCompleteWithFileName?.call(fileName));
-        } else {
-          logger.t('normal realSaveFullPath $realSaveFullPath');
-          onDownloadCompleteWithFileName?.call(path.basename(realSaveFullPath));
-        }
-      },
       progressCallback: progressCallback,
     );
+    if (cancelToken?.isCancelled ?? false) {
+      throw cancelToken!.cancelError!;
+    }
+
+    // 等待文件写入结束，而不是在最后一次网络进度回调中提前标记完成。
+    if (parentPath.isContentUri && tempSavePath.isNotEmpty) {
+      final file = File(tempSavePath);
+      final extension =
+          path.extension(tempSavePath).replaceAll(RegExp(r'[^0-9a-zA-Z.]'), '');
+      final fileName = '$fileNameWithoutExtension$extension';
+      final result = await ss.createFileAsBytes(
+        Uri.parse(parentPath),
+        mimeType: '*/*',
+        displayName: fileName,
+        bytes: await file.readAsBytes(),
+      );
+      if (result == null) {
+        throw FileSystemException(
+            'Failed to save downloaded image', parentPath);
+      }
+      await file.delete();
+      if (cancelToken?.isCancelled ?? false) {
+        throw cancelToken!.cancelError!;
+      }
+      await onDownloadCompleteWithFileName?.call(result.name ?? fileName);
+    } else {
+      await onDownloadCompleteWithFileName
+          ?.call(path.basename(realSaveFullPath));
+    }
   }
 
   /// 根据ser获取image信息

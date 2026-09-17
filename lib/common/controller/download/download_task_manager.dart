@@ -180,11 +180,7 @@ class DownloadTaskManager {
       coverImage: coverImg,
     );
 
-    final task = dState.galleryTaskMap[gid];
-    if (task != null) {
-      isarHelper.putGalleryTaskIsolate(task);
-    }
-
+    // 完成回调统一持久化进度或最终状态，避免后台旧快照覆盖 complete。
     return dState.galleryTaskMap[gid];
   }
 

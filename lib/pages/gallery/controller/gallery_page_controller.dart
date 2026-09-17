@@ -692,6 +692,8 @@ class GalleryPageController extends GetxController
       category: gState.galleryProvider?.category,
       downloadOri: downloadOri,
       showKey: gState.galleryProvider?.showKey,
+      images: gState.images.toList(),
+      groupCount: gState.firstPageImage.length,
     );
   }
 
