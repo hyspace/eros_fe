@@ -417,6 +417,7 @@ class Api {
     required String fileNameWithoutExtension,
     String? cacheKey,
     CancelToken? cancelToken,
+    void Function(String keyType, String outcome, int bytes)? onCacheLookup,
   }) async {
     void checkCancelled() {
       if (cancelToken?.isCancelled ?? false) {
@@ -431,8 +432,10 @@ class Api {
       if (imageUrl.isNotEmpty) null,
     ];
     for (final key in keys) {
+      final keyType = key == null ? 'legacy' : 'reader';
       final imageFile = await getCachedImageFile(imageUrl, cacheKey: key);
       if (imageFile == null) {
+        onCacheLookup?.call(keyType, 'missing', 0);
         continue;
       }
 
@@ -441,13 +444,17 @@ class Api {
         bytes = await imageFile.readAsBytes();
       } on FileSystemException {
         // 缓存可能在查找后被系统或用户清理，不影响网络回退。
+        onCacheLookup?.call(keyType, 'read_error', 0);
         continue;
       }
       final mimeType = lookupMimeType('', headerBytes: bytes.take(12).toList());
       if (bytes.isEmpty || mimeType == null || !mimeType.startsWith('image/')) {
+        onCacheLookup?.call(
+            keyType, bytes.isEmpty ? 'empty' : 'not_image', bytes.length);
         continue;
       }
       checkCancelled();
+      onCacheLookup?.call(keyType, 'found', bytes.length);
 
       final ext = extensionFromMime(mimeType) ?? mimeType.split('/').last;
       final fileName = '$fileNameWithoutExtension.$ext';

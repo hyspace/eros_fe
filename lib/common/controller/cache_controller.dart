@@ -48,7 +48,7 @@ class CacheController extends GetxController with StateMixin<String> {
     // DioCacheManager(CacheConfig(databasePath: Global.appSupportPath))
     //     .deleteByPrimaryKey(path, requestMethod: 'POST');
 
-    Api.cacheOption.store?.deleteFromPath(RegExp(path));
+    await Api.cacheOption.store?.deleteFromPath(RegExp(path));
   }
 
   Future<String> getTotCacheSize() async {

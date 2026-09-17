@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/const/const.dart';
@@ -534,6 +535,7 @@ class _ViewImageState extends State<ViewImage> with TickerProviderStateMixin {
                     imageInfo.image.height.toDouble()));
 
                 if (imageData != null) {
+                  recordReaderCache(imageData, phase: 'reader');
                   final GalleryImage? tmpImage =
                       vState.imageMap?[imageData.ser];
                   if (tmpImage != null && !(tmpImage.completeHeight ?? false)) {

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/index.dart';
 import 'package:eros_fe/network/request.dart';
@@ -161,6 +162,7 @@ class GalleryPara {
     /// 预缓存图片
     try {
       await precacheImage(imageProvider, Get.context!);
+      await recordReaderCache(image, phase: 'preload');
       logger.d('预载图片完成 $url');
       return image.copyWith(completeCache: true.oN);
     } catch (e, stack) {

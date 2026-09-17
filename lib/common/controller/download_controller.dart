@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:collection/collection.dart';
 import 'package:dio/dio.dart';
+import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/common/controller/download/download_monitor.dart' as dm;
 import 'package:eros_fe/common/controller/download/download_path_manager.dart';
 import 'package:eros_fe/common/controller/download/download_task_manager.dart'
@@ -78,6 +78,12 @@ class DownloadController extends GetxController {
     taskManager =
         dtm.DownloadTaskManager(dState, storageAdapter: storageAdapter);
     downloadMonitor = dm.DownloadMonitor(dState);
+    if (downloadDiagnosticsEnabled) {
+      activeDownloadDiagnostics ??= DownloadDiagnostics(File(path.join(
+          logDirectory ?? path.join(Global.appDocPath, 'log'),
+          'download-diagnostics.log')));
+      activeDownloadDiagnostics?.record('session_start');
+    }
     imageProcessor = ImageDownloadProcessor(dState, cacheController);
 
     // 初始化画廊槽位管理器
@@ -421,15 +427,7 @@ class DownloadController extends GetxController {
   }
 
   void _addAllImages(int gid, List<GalleryImage> galleryImages) {
-    for (final GalleryImage image in galleryImages) {
-      final int? index = dState.downloadMap[gid]
-          ?.indexWhere((GalleryImage e) => e.ser == image.ser);
-      if (index != null && index != -1) {
-        dState.downloadMap[gid]?[index] = image;
-      } else {
-        dState.downloadMap[gid]?.add(image);
-      }
-    }
+    dState.mergeImagePreviews(gid, galleryImages);
   }
 
   // 添加任务队列
@@ -447,7 +445,8 @@ class DownloadController extends GetxController {
 
     // 使用槽位管理器添加任务，保存 groupCount 和 images 信息
     dState.galleryTaskExtraInfo[galleryTask.gid] = {
-      'groupCount': groupCount,
+      'groupCount': groupCount ??
+          dState.galleryTaskExtraInfo[galleryTask.gid]?['groupCount'],
       'images': images,
     };
     loggerSimple.d('将任务交给槽位管理器: gid=${galleryTask.gid}');
@@ -504,8 +503,9 @@ class DownloadController extends GetxController {
         ?.firstWhereOrNull((element) => element.ser == ser);
   }
 
-  int _initDownloadMapByGid(int gid, {List<GalleryImage>? images}) {
-    dState.downloadMap[gid] = images?.toList() ?? [];
+  int _initDownloadMapByGid(int gid, List<GalleryImageTask> stored,
+      {List<GalleryImage>? images}) {
+    dState.restoreImageMetadata(gid, stored, readerImages: images);
     return dState.downloadMap[gid]?.length ?? 0;
   }
 
@@ -538,6 +538,11 @@ class DownloadController extends GetxController {
             checkMaxCount: dm.kCheckMaxCount,
             periodSeconds: dm.kPeriodSeconds,
             onRetryNeededCallback: (int gid) {
+              activeDownloadDiagnostics
+                  ?.record('automatic_retry', gid: gid, details: {
+                'completed': task?.completCount,
+                'page_count': task?.fileCount,
+              });
               logger.d('检测到下载停滞，正在重试 gid:$gid, 时间:${DateTime.now()}');
 
               // 执行重试
@@ -696,11 +701,22 @@ class DownloadController extends GetxController {
         galleryTask.copyWith(completCount: completeCount));
 
     // 初始化下载Map
-    final initCount = _initDownloadMapByGid(galleryTask.gid, images: images);
+    final initCount =
+        _initDownloadMapByGid(galleryTask.gid, imageTasksOri, images: images);
     logger.d('初始化下载Map: gid=${galleryTask.gid}, 初始数量=$initCount');
 
-    final putCount = await _updateImageTasksByGid(galleryTask.gid);
+    final putCount =
+        await _updateImageTasksByGid(galleryTask.gid, imageTasksOri);
     logger.d('更新图片任务到数据库: gid=${galleryTask.gid}, 更新数量=$putCount');
+    activeDownloadDiagnostics
+        ?.record('task_start', gid: galleryTask.gid, details: {
+      'page_count': galleryTask.fileCount,
+      'completed': completeCount,
+      'known_urls': dState.downloadMap[galleryTask.gid]
+          ?.where((image) => image.imageUrl?.isNotEmpty ?? false)
+          .length,
+      'original': galleryTask.downloadOrigImage ?? false,
+    });
 
     logger.d('更新任务状态为running: gid=${galleryTask.gid}');
     await galleryTaskUpdateStatus(galleryTask.gid, TaskStatus.running);
@@ -719,26 +735,13 @@ class DownloadController extends GetxController {
     final String downloadParentPath = realDirPath;
     logger.d('下载父目录: gid=${galleryTask.gid}, path=$downloadParentPath');
 
-    final List<int> completeSerList = imageTasksOri
-        .where((element) => element.status == TaskStatus.complete.value)
-        .map((e) => e.ser)
-        .toList();
-
-    final int maxCompleteSer =
-        completeSerList.isNotEmpty ? completeSerList.reduce(max) : 0;
-    logger.d('最大已完成序号: gid=${galleryTask.gid}, maxCompleteSer=$maxCompleteSer');
-
     // 循环进行下载图片
     logger.d('开始循环下载: gid=${galleryTask.gid}, 文件总数=${galleryTask.fileCount}');
-    for (int index = 0; index < galleryTask.fileCount; index++) {
-      final itemSer = index + 1;
-
-      final oriImageTask =
-          imageTasksOri.firstWhereOrNull((element) => element.ser == itemSer);
-      if (oriImageTask?.status == TaskStatus.complete.value) {
-        logger.t('图片已完成，跳过: gid=${galleryTask.gid}, ser=$itemSer');
-        continue;
-      }
+    final plans =
+        dState.pendingImageTasks(galleryTask.fileCount, imageTasksOri);
+    for (final plan in plans) {
+      final itemSer = plan.ser;
+      final oriImageTask = plan.previousTask;
 
       logger.t(
           '准备下载图片: gid=${galleryTask.gid}, ser=$itemSer/${galleryTask.fileCount}');
@@ -755,7 +758,7 @@ class DownloadController extends GetxController {
       // 缓存命中不需要 showKey；未命中且缺少 showKey 时，图片解析会回退 HTML。
       // 不能等待首张图一定产生 showKey，否则首张图直接复用缓存时可能一直阻塞。
 
-      dState.executor.scheduleTask(() async {
+      unawaited(dState.executor.scheduleTask<void>(() async {
         logger.d('开始处理图片任务: gid=${galleryTask.gid}, ser=$itemSer');
         final GalleryImage? preImage =
             await imageProcessor.checkAndGetImageList(
@@ -785,7 +788,7 @@ class DownloadController extends GetxController {
               showKey: dState.showKeyMap[galleryTask.gid],
               downloadOrigImage: galleryTask.downloadOrigImage ?? false,
               cancelToken: cancelToken,
-              reDownload: itemSer > 1 && itemSer < maxCompleteSer + 2,
+              reDownload: plan.refreshLink,
               onDownloadCompleteWithFileName: (String fileName) =>
                   _onDownloadComplete(
                 fileName,
@@ -833,7 +836,22 @@ class DownloadController extends GetxController {
         } else {
           logger.e('获取图片信息失败: gid=${galleryTask.gid}, ser=$itemSer');
         }
-      });
+      }).catchError((Object error, StackTrace stack) {
+        if (cancelToken.isCancelled) {
+          return;
+        }
+        activeDownloadDiagnostics?.record('page_error',
+            gid: galleryTask.gid,
+            page: itemSer,
+            details: DownloadDiagnostics.failure(error));
+        if (!dState.errInfoMap.containsKey(galleryTask.gid)) {
+          final cause = error is DioException ? error.error ?? error : error;
+          _updateErrInfo(
+              galleryTask.gid, 'Page $itemSer: ${cause.runtimeType}');
+        }
+        // The pending database row remains incomplete for the retry monitor.
+        // Consume the executor Future instead of emitting an unhandled error.
+      }));
     }
     logger.d('所有图片任务已加入队列: gid=${galleryTask.gid}');
   }
@@ -952,7 +970,7 @@ class DownloadController extends GetxController {
           href: image.href,
           imageUrl: image.imageUrl,
           sourceId: image.sourceId,
-          filePath: fileName,
+          filePath: fileName ?? oriImageTask.filePath,
           status: status,
         ) ??
         newImageTask;
@@ -967,27 +985,15 @@ class DownloadController extends GetxController {
     }
   }
 
-  Future<int> _updateImageTasksByGid(int gid,
-      {List<GalleryImage>? images}) async {
-    // 插入所有任务明细
-    final List<GalleryImageTask>? galleryImageTasks =
-        (images ?? dState.downloadMap[gid])
-            ?.map((GalleryImage e) => GalleryImageTask(
-                  gid: gid,
-                  token: '',
-                  href: e.href,
-                  ser: e.ser,
-                  imageUrl: e.imageUrl,
-                  sourceId: e.sourceId,
-                ))
-            .toList();
-
-    if (galleryImageTasks != null) {
+  Future<int> _updateImageTasksByGid(
+      int gid, List<GalleryImageTask> existing) async {
+    final galleryImageTasks = dState.missingImageTasks(gid, existing);
+    if (galleryImageTasks.isNotEmpty) {
       logger.d('插入所有任务明细 $gid ${galleryImageTasks.length}');
       await isarHelper.putAllImageTaskIsolate(galleryImageTasks);
     }
 
-    return galleryImageTasks?.length ?? 0;
+    return galleryImageTasks.length;
   }
 
   // 暂停所有任务

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:eros_fe/common/controller/cache_controller.dart';
+import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/common/controller/download/download_task_manager.dart';
 import 'package:eros_fe/common/controller/download_state.dart';
 import 'package:eros_fe/component/exception/error.dart';
@@ -11,6 +12,7 @@ import 'package:eros_fe/index.dart';
 import 'package:eros_fe/network/api.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
+import 'package:extended_image/extended_image.dart' show keyToMd5;
 import 'package:path/path.dart' as path;
 import 'package:shared_storage/shared_storage.dart' as ss;
 import 'package:sprintf/sprintf.dart' as sp;
@@ -30,9 +32,37 @@ class ImageDownloadInfo {
 }
 
 class ImageDownloadProcessor {
-  ImageDownloadProcessor(this.dState, this.cacheController);
+  ImageDownloadProcessor(this.dState, this.cacheController,
+      {DownloadDiagnostics? diagnostics})
+      : diagnostics = diagnostics ?? activeDownloadDiagnostics;
   final DownloadState dState;
   final CacheController cacheController;
+  final DownloadDiagnostics? diagnostics;
+
+  void _trace(String event, int? gid, int? ser,
+      [Map<String, Object?> details = const {}]) {
+    diagnostics?.record(event, gid: gid, page: ser, details: details);
+  }
+
+  void Function(String, String, int)? _cacheObserver(
+      int? gid, int? ser, String phase, String url, String? cacheKey) {
+    if (diagnostics == null) {
+      return null;
+    }
+    return (keyType, outcome, bytes) => _trace(
+          outcome == 'found' ? 'cache_found' : 'cache_miss',
+          gid,
+          ser,
+          {
+            'phase': phase,
+            'key_type': keyType,
+            'key_hash':
+                keyToMd5(keyType == 'reader' ? cacheKey! : keyToMd5(url)),
+            'reason': outcome,
+            'bytes': bytes,
+          },
+        );
+  }
 
   /// 下载图片流程控制
   Future<void> downloadImageFlow(
@@ -42,6 +72,7 @@ class ImageDownloadProcessor {
     String downloadParentPath,
     int maxSer, {
     bool downloadOrigImage = false,
+    // Automatic gap retries refresh links, but must still check the cache.
     bool reDownload = false,
     CancelToken? cancelToken,
     FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
@@ -57,12 +88,19 @@ class ImageDownloadProcessor {
     if (cancelToken?.isCancelled ?? false) {
       throw cancelToken!.cancelError!;
     }
+    _trace('page_start', gid, preImage.ser, {
+      'retry': reDownload,
+      'original': downloadOrigImage,
+      'has_url': preImage.imageUrl?.isNotEmpty ?? false,
+      'has_href': preImage.href?.isNotEmpty ?? false,
+      'has_origin': preImage.originImageUrl?.isNotEmpty ?? false,
+    });
 
     // 先尝试阅读时已缓存的版本，不必重新解析图片页面或获取下载链接。
     // 原图地址未知时不能用重采样图代替，交给后续解析流程处理。
     final cachedUrl =
         downloadOrigImage ? preImage.originImageUrl : preImage.imageUrl;
-    if (!reDownload && cachedUrl != null && cachedUrl.isNotEmpty) {
+    if (cachedUrl != null && cachedUrl.isNotEmpty) {
       final fileName = imageTask?.filePath;
       final savedPath = await Api.saveImageFromExtendedCache(
         imageUrl: cachedUrl,
@@ -72,8 +110,12 @@ class ImageDownloadProcessor {
             ? path.basenameWithoutExtension(fileName)
             : genFileNameWithoutExtension(preImage, maxSer),
         cancelToken: cancelToken,
+        onCacheLookup: _cacheObserver(gid, preImage.ser, 'before_metadata',
+            cachedUrl, _cacheKey(preImage, cachedUrl)),
       );
       if (savedPath != null) {
+        _trace('cache_saved', gid, preImage.ser, {'phase': 'before_metadata'});
+        dState.rememberResolvedImages(gid, [preImage]);
         _updateShowKey(gid, preImage.showKey);
         resetReDownloadCount(gid, preImage.ser);
         await putImageTaskCallback?.call(
@@ -83,8 +125,15 @@ class ImageDownloadProcessor {
           TaskStatus.complete.value,
         );
         await onDownloadCompleteWithFileName?.call(path.basename(savedPath));
+        _trace('page_complete', gid, preImage.ser, {'reason': 'cache'});
         return;
       }
+    } else {
+      _trace('cache_not_checked', gid, preImage.ser, {
+        'phase': 'before_metadata',
+        'reason':
+            downloadOrigImage ? 'original_url_unknown' : 'image_url_unknown',
+      });
     }
 
     // 获取下载URL和更新后的图片信息
@@ -100,6 +149,8 @@ class ImageDownloadProcessor {
       updateShowKeyCallback: (gid, showKey, {updateDB}) {
         _updateShowKey(gid, showKey);
       },
+      addAllImagesCallback: dState.rememberResolvedImages,
+      putImageTaskCallback: putImageTaskCallback,
     );
 
     if (downloadInfo.updatedImage.sourceId?.isEmpty ?? true) {
@@ -119,7 +170,8 @@ class ImageDownloadProcessor {
         downloadParentPath,
         downloadInfo.fileNameWithoutExtension,
         cacheKey: _cacheKey(downloadInfo.updatedImage, downloadInfo.imageUrl),
-        useCache: !reDownload,
+        gid: gid,
+        ser: preImage.ser,
         cancelToken: cancelToken,
         onDownloadCompleteWithFileName: (fileName) async {
           // 下载成功，重置重试计数
@@ -134,6 +186,7 @@ class ImageDownloadProcessor {
             );
           }
           await onDownloadCompleteWithFileName?.call(fileName);
+          _trace('page_complete', gid, preImage.ser);
         },
         progressCallback: progressCallback,
       );
@@ -150,7 +203,7 @@ class ImageDownloadProcessor {
           onDownloadCompleteWithFileName,
           downloadInfo.updatedImage.sourceId,
           showKey,
-          useCache: !reDownload,
+          addAllImagesCallback: dState.rememberResolvedImages,
           putImageTaskCallback: putImageTaskCallback,
         );
       } else {
@@ -216,7 +269,7 @@ class ImageDownloadProcessor {
       if (reDownload) {
         logger.d(
             '重下载 ${preImage.ser}, 清除缓存 ${preImage.href} , sourceId:${imageTask?.sourceId}');
-        cacheController.clearDioCache(path: preImage.href ?? '');
+        await cacheController.clearDioCache(path: preImage.href ?? '');
         logger.d(
             'reDownload >>>>>>>>>>>>>>>> imageTask : ${jsonEncode(imageTask)}, preImage: ${jsonEncode(preImage)}');
 
@@ -227,7 +280,7 @@ class ImageDownloadProcessor {
       // 根据重试次数决定是否使用sourceId
       String? sourceIdToUse;
       if (reDownload && shouldUseSourceId(gid, preImage.ser)) {
-        sourceIdToUse = imageTask?.sourceId;
+        sourceIdToUse = imageTask?.sourceId ?? preImage.sourceId;
         logger.d('Reached retry limit, using source change: '
             'gid=$gid, ser=${preImage.ser}, sourceId=$sourceIdToUse');
       } else {
@@ -240,6 +293,11 @@ class ImageDownloadProcessor {
       }
 
       // 否则先请求解析新的图片地址
+      _trace('metadata_fetch', gid, preImage.ser, {
+        'retry': reDownload,
+        'attempt': getReDownloadCount(gid, preImage.ser),
+        'source_change': sourceIdToUse?.isNotEmpty ?? false,
+      });
       final GalleryImage imageFetched = await fetchImageInfo(
         preImage.href!,
         itemSer: preImage.ser,
@@ -249,6 +307,9 @@ class ImageDownloadProcessor {
         sourceId: sourceIdToUse, // 使用计算后的sourceId
         showKey: showKey,
       );
+      if (cancelToken?.isCancelled ?? false) {
+        throw cancelToken!.cancelError!;
+      }
 
       if (imageFetched.imageUrl == null) {
         throw EhError(error: 'get imageUrl error');
@@ -264,6 +325,10 @@ class ImageDownloadProcessor {
           ? imageFetched.originImageUrl ?? imageFetched.imageUrl!
           : imageFetched.imageUrl!;
       updatedImage = imageFetched;
+      _trace('metadata_resolved', gid, preImage.ser, {
+        'has_url': imageFetched.imageUrl?.isNotEmpty ?? false,
+        'has_origin': imageFetched.originImageUrl?.isNotEmpty ?? false,
+      });
 
       logger.t(
           'downloadOrigImage:$downloadOrigImage\nDownload imageUrl:$imageUrl');
@@ -307,13 +372,13 @@ class ImageDownloadProcessor {
     FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
     String? sourceId,
     String? showKey, {
-    bool useCache = true,
     Function? addAllImagesCallback,
     Future<void> Function(
             int gid, GalleryImage image, String? fileName, int? status)?
         putImageTaskCallback,
   }) async {
     logger.d('403 $gid.${image.ser}下载链接已经失效 需要更新 ${image.href}');
+    _trace('link_expired', gid, image.ser);
 
     // 增加重试计数（403错误视为重试）
     incrementReDownloadCount(gid, image.ser);
@@ -340,6 +405,9 @@ class ImageDownloadProcessor {
       sourceId: sourceIdToUse, // 使用计算后的sourceId
       showKey: showKey,
     );
+    if (cancelToken?.isCancelled ?? false) {
+      throw cancelToken!.cancelError!;
+    }
 
     // 更新 showkey
     _updateShowKey(gid, imageFetched.showKey);
@@ -364,7 +432,9 @@ class ImageDownloadProcessor {
       downloadParentPath,
       fileNameWithoutExtension,
       cacheKey: _cacheKey(imageFetched, newImageUrl),
-      useCache: useCache,
+      gid: gid,
+      ser: image.ser,
+      cachePhase: 'after_403',
       cancelToken: cancelToken,
       onDownloadCompleteWithFileName: (fileName) async {
         // 下载成功，重置重试计数
@@ -379,6 +449,7 @@ class ImageDownloadProcessor {
           );
         }
         await onDownloadCompleteWithFileName?.call(fileName);
+        _trace('page_complete', gid, image.ser);
       },
       progressCallback: progressCallback,
     );
@@ -391,6 +462,9 @@ class ImageDownloadProcessor {
     String fileNameWithoutExtension, {
     String? cacheKey,
     bool useCache = true,
+    int? gid,
+    int? ser,
+    String cachePhase = 'after_metadata',
     CancelToken? cancelToken,
     FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
     ProgressCallback? progressCallback,
@@ -406,8 +480,10 @@ class ImageDownloadProcessor {
         parentPath: parentPath,
         fileNameWithoutExtension: fileNameWithoutExtension,
         cancelToken: cancelToken,
+        onCacheLookup: _cacheObserver(gid, ser, cachePhase, url, cacheKey),
       );
       if (filePath != null) {
+        _trace('cache_saved', gid, ser, {'phase': cachePhase});
         logger.d('从缓存读取文件 $filePath');
         await onDownloadCompleteWithFileName?.call(path.basename(filePath));
         return;
@@ -454,15 +530,30 @@ class ImageDownloadProcessor {
     }
 
     // 调用 request 下载文件
-    await ehDownload(
-      url: url,
-      savePathBuilder: savePathBuild,
-      cancelToken: cancelToken,
-      progressCallback: progressCallback,
-    );
+    int transferred = 0;
+    _trace('network_start', gid, ser, DownloadDiagnostics.endpoint(url));
+    try {
+      await transferImage(
+        url,
+        savePathBuild,
+        cancelToken: cancelToken,
+        progressCallback: (count, total) {
+          transferred = count;
+          progressCallback?.call(count, total);
+        },
+      );
+    } catch (error) {
+      _trace('network_error', gid, ser, {
+        ...DownloadDiagnostics.endpoint(url),
+        ...DownloadDiagnostics.failure(error),
+        'bytes': transferred,
+      });
+      rethrow;
+    }
     if (cancelToken?.isCancelled ?? false) {
       throw cancelToken!.cancelError!;
     }
+    _trace('network_complete', gid, ser, {'bytes': transferred});
 
     // 等待文件写入结束，而不是在最后一次网络进度回调中提前标记完成。
     if (parentPath.isContentUri && tempSavePath.isNotEmpty) {
@@ -490,6 +581,20 @@ class ImageDownloadProcessor {
           ?.call(path.basename(realSaveFullPath));
     }
   }
+
+  /// Network boundary; tests can exercise the real cache/retry/save pipeline.
+  Future<void> transferImage(
+    String url,
+    String Function(Headers) savePathBuilder, {
+    CancelToken? cancelToken,
+    ProgressCallback? progressCallback,
+  }) =>
+      ehDownload(
+        url: url,
+        savePathBuilder: savePathBuilder,
+        cancelToken: cancelToken,
+        progressCallback: progressCallback,
+      );
 
   /// 根据ser获取image信息
   Future<GalleryImage?> checkAndGetImageList(
