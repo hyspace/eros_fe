@@ -5,6 +5,12 @@ English | [简体中文](https://github.com/3003h/Eros-FE/blob/master/README_cn.
 
 An Unofficial e-hentai app make on flutter
 
+## Private Fork
+
+This fork's changes, design rationale, validation notes, and branch status are
+documented in [Private Fork change history](docs/change-log/README.md).
+The backup/export feature remains on its separate branch and is not part of `master`.
+
 ## 🔍 Translations Wanted 🔍
 Please submit a pull request if you want to help with translation.
 

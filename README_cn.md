@@ -5,6 +5,12 @@
 
 一个 flutter 编写的 e-hentai app
 
+## Private Fork 变更记录
+
+本 fork 每次改动的原因、实现、设计取舍、验证结果和合并状态统一维护在
+[变更文档目录](docs/change-log/README.md)。备份导出功能仍保留在独立分支，
+没有因为归档其说明文档而合入 `master`。
+
 ## iOS 安装
 1. 下载最新 ipa 文件 [Releases](https://github.com/3003h/Eros-FE/releases/latest).
 2. 使用 [AltStore](https://altstore.io) 之类的 app 安装到设备上. 或者直接使用 [AltStore.json](https://config-feh.vercel.app/AltStore.json)
