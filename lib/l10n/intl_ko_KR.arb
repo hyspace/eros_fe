@@ -446,5 +446,9 @@
   "page_view_type": "Page View Type",
   "slide_out_page": "Slide Out Page",
   "high_resolution_images_limited": "High Resolution Images Limited",
-  "refresh_igneous": "Refresh Igneous"
+  "refresh_igneous": "Refresh Igneous",
+  "download_retry": "재시도",
+  "download_resume": "계속",
+  "download_retry_remaining": "미완료 페이지 다시 시도",
+  "download_restart_all": "모든 페이지 다시 다운로드"
 }

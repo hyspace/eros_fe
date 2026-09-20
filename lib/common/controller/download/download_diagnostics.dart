@@ -45,6 +45,14 @@ class DownloadDiagnostics {
     'dio_type',
     'tls_error',
     'http_status',
+    'max_attempts',
+    'delay_ms',
+    'failed_pages',
+    'adapter',
+    'proxy_type',
+    'elapsed_ms',
+    'redirect_count',
+    'os_error_code',
   };
 
   void record(
@@ -92,21 +100,38 @@ class DownloadDiagnostics {
     }
   }
 
+  /// Never include proxy hosts, usernames or passwords in diagnostics.
+  static String proxyType(String? proxy) {
+    final type = (proxy ?? '').trim().split(RegExp(r'\s+')).first.toUpperCase();
+    return const {'DIRECT', 'PROXY', 'SOCKS4', 'SOCKS5'}.contains(type)
+        ? type.toLowerCase()
+        : 'unspecified';
+  }
+
   static Map<String, Object?> failure(Object error) {
     final cause = error is DioException ? error.error ?? error : error;
+    // BoringSSL's code is often in OSError, not HandshakeException.message.
+    // Inspect the string for a fixed classification, but never persist it.
+    final tls = cause is HandshakeException ? cause.toString() : '';
     return {
       'exception': cause.runtimeType.toString(),
       if (error is DioException) 'dio_type': error.type.name,
       if (error is DioException) 'http_status': error.response?.statusCode,
+      if (cause is SocketException) 'os_error_code': cause.osError?.errorCode,
       if (cause is HandshakeException)
-        'tls_error': cause.message.contains('WRONG_VERSION_NUMBER')
+        'tls_error': tls.contains('WRONG_VERSION_NUMBER')
             ? 'wrong_version_number'
-            : (cause.message.contains('CERTIFICATE_VERIFY_FAILED')
+            : (tls.contains('CERTIFICATE_VERIFY_FAILED')
                 ? 'certificate_verify_failed'
                 : 'handshake_failed'),
     };
   }
 }
+
+int? diagnosticGalleryId(GalleryImage image) =>
+    int.tryParse(image.gid ?? '') ??
+    int.tryParse(
+        RegExp(r'/(\d+)-\d+').firstMatch(image.href ?? '')?.group(1) ?? '');
 
 /// Correlate the reader's actual key and on-disk presence with later downloads.
 /// Only runs in a diagnostic build; inspecting a cache never downloads an image.
@@ -121,10 +146,9 @@ Future<void> recordReaderCache(
   }
   try {
     final key = image.getCacheKey(url);
-    final gid = RegExp(r'/(\d+)-\d+').firstMatch(image.href ?? '')?.group(1);
     diagnostics.record(
       'reader_ready',
-      gid: int.tryParse(gid ?? ''),
+      gid: diagnosticGalleryId(image),
       page: image.ser,
       details: {
         'phase': phase,

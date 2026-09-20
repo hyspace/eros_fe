@@ -446,5 +446,9 @@
   "page_view_type": "Page View Type",
   "slide_out_page": "Slide Out Page",
   "high_resolution_images_limited": "High Resolution Images Limited",
-  "refresh_igneous": "Refresh Igneous"
+  "refresh_igneous": "Refresh Igneous",
+  "download_retry": "Retry",
+  "download_resume": "Continue",
+  "download_retry_remaining": "Retry unfinished pages",
+  "download_restart_all": "Redownload all pages"
 }

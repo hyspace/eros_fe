@@ -5,7 +5,7 @@ import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/index.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/utils/logger.dart';
-import 'package:extended_image/extended_image.dart';
+import 'package:eros_fe/widget/image/reader_image_provider.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
@@ -151,22 +151,26 @@ class GalleryPara {
   ) async {
     final cacheKey = image.getCacheKey(url);
     logger.d('_precacheSingleImage, 开始预载图片 $url,\ncacheKey: $cacheKey');
-    final ImageProvider imageProvider = ExtendedNetworkImageProvider(
+    final ImageProvider imageProvider = ReaderImageProvider(
       url,
-      cache: true,
       cacheKey: cacheKey,
-      retries: 5,
-      timeLimit: const Duration(seconds: 5),
+      page: image.ser,
+      gid: diagnosticGalleryId(image),
+      phase: 'preload',
     );
 
     /// 预缓存图片
     try {
-      await precacheImage(imageProvider, Get.context!);
+      // Flutter precacheImage otherwise completes successfully on failure.
+      Object? failure;
+      await precacheImage(imageProvider, Get.context!,
+          onError: (error, _) => failure = error);
+      if (failure != null) throw failure!;
       await recordReaderCache(image, phase: 'preload');
       logger.d('预载图片完成 $url');
       return image.copyWith(completeCache: true.oN);
-    } catch (e, stack) {
-      logger.e('$e /n $stack');
+    } catch (e) {
+      logger.e('Preload failed: ${DownloadDiagnostics.failure(e)}');
       return null;
     }
   }

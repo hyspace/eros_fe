@@ -1,7 +1,10 @@
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/network/image_transfer_adapter.dart';
 import 'package:flutter_socks_proxy/socks_proxy.dart';
 import 'package:get/get.dart';
 import 'package:system_network_proxy/system_network_proxy.dart';
@@ -9,6 +12,10 @@ import 'package:system_proxy/system_proxy.dart';
 
 class HttpProxyAdapter extends IOHttpClientAdapter {
   HttpProxyAdapter({required this.proxy, bool? skipCertificate}) {
+    _images = ImageTransferAdapter(
+      proxy: proxy,
+      skipCertificate: proxy != 'DIRECT' || (skipCertificate ?? false),
+    );
     createHttpClient = () {
       final client = createProxyHttpClient();
       if (proxy.isNotEmpty) {
@@ -24,6 +31,22 @@ class HttpProxyAdapter extends IOHttpClientAdapter {
   }
 
   final String proxy;
+  late final ImageTransferAdapter _images;
+
+  @override
+  Future<ResponseBody> fetch(RequestOptions options,
+      Stream<Uint8List>? requestStream, Future<void>? cancelFuture) {
+    if (options.extra['feImageTransfer'] == true) {
+      return _images.fetch(options, requestStream, cancelFuture);
+    }
+    return super.fetch(options, requestStream, cancelFuture);
+  }
+
+  @override
+  void close({bool force = false}) {
+    _images.close(force: force);
+    super.close(force: force);
+  }
 }
 
 Future<String> getProxy({

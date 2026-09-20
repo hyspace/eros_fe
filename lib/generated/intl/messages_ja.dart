@@ -129,6 +129,14 @@ class MessageLookup extends MessageLookupByLibrary {
             MessageLookupByLibrary.simpleMessage("オリジナル画像をダウンロード"),
         "download_ori_image_summary":
             MessageLookupByLibrary.simpleMessage("危険です！509エラー発生可能性するがあります"),
+        "download_restart_all": MessageLookupByLibrary.simpleMessage(
+          "すべてのページを再ダウンロード",
+        ),
+        "download_resume": MessageLookupByLibrary.simpleMessage("再開"),
+        "download_retry": MessageLookupByLibrary.simpleMessage("再試行"),
+        "download_retry_remaining": MessageLookupByLibrary.simpleMessage(
+          "未完了のページを再試行",
+        ),
         "downloaded": MessageLookupByLibrary.simpleMessage("ダウンロード済み"),
         "downloading": MessageLookupByLibrary.simpleMessage("ダウンロード中"),
         "edit": MessageLookupByLibrary.simpleMessage("編集"),

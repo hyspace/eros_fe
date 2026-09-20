@@ -446,5 +446,9 @@
   "page_view_type": "頁面檢視類型",
   "slide_out_page": "拖動返回",
   "high_resolution_images_limited": "高解析度圖片限制",
-  "refresh_igneous": "重新整理Igneous"
+  "refresh_igneous": "重新整理Igneous",
+  "download_retry": "重試",
+  "download_resume": "繼續",
+  "download_retry_remaining": "重試未完成頁",
+  "download_restart_all": "全部重新下載"
 }

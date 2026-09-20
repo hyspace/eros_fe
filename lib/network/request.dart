@@ -795,7 +795,8 @@ Future<void> ehDownload({
         }
       },
       cancelToken: cancelToken,
-      options: getCacheOptions(refresh: false, forceCache: false),
+      options: getCacheOptions(refresh: false, forceCache: false)
+        ..extra?['feImageTransfer'] = true,
     );
   } on CancelException catch (e) {
     logger.d('cancel');

@@ -16,6 +16,7 @@ import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/component/quene_task/quene_task.dart';
 import 'package:eros_fe/index.dart';
 import 'package:eros_fe/network/app_dio/pdio.dart';
+import 'package:eros_fe/network/image_retry_policy.dart';
 import 'package:eros_fe/pages/tab/controller/download_view_controller.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:eros_fe/store/db/entity/gallery_task.dart';
@@ -461,17 +462,33 @@ class DownloadController extends GetxController {
     final int? groupCount = extraInfo?['groupCount'] as int?;
     final List<GalleryImage>? images =
         extraInfo?['images'] as List<GalleryImage>?;
+    // Install the run identity before any asynchronous setup. A cancelled old
+    // run must not schedule work or pause a newer user-initiated resume.
+    dState.cancelTokenMap[galleryTask.gid]?.cancel();
+    final cancelToken = CancelToken();
+    dState.cancelTokenMap[galleryTask.gid] = cancelToken;
 
     loggerSimple.d(
         '准备添加任务到队列: gid=${galleryTask.gid}, fileCount=${galleryTask.fileCount}, groupCount=$groupCount}');
     dState.queueTask.add(
       ({name}) {
         logger.d('队列执行任务: $name, gid=${galleryTask.gid}');
-        _startImageTask(
+        unawaited(_startImageTask(
           galleryTask: galleryTask,
           groupCount: groupCount,
           images: images,
-        );
+          cancelToken: cancelToken,
+        ).catchError((Object error, StackTrace stack) async {
+          if (cancelToken.isCancelled ||
+              !identical(dState.cancelTokenMap[galleryTask.gid], cancelToken)) {
+            return;
+          }
+          activeDownloadDiagnostics?.record('task_setup_error',
+              gid: galleryTask.gid,
+              details: DownloadDiagnostics.failure(error));
+          _updateErrInfo(galleryTask.gid, 'Download: ${error.runtimeType}');
+          await galleryTaskPaused(galleryTask.gid);
+        }));
         logger.d('_startImageTask执行完成: gid=${galleryTask.gid}');
       },
       taskName: '${galleryTask.gid}',
@@ -532,26 +549,9 @@ class DownloadController extends GetxController {
             periodSeconds: dm.kPeriodSeconds,
           );
 
-          // 检查下载停滞状态
-          downloadMonitor.checkDownloadStall(
-            gid,
-            checkMaxCount: dm.kCheckMaxCount,
-            periodSeconds: dm.kPeriodSeconds,
-            onRetryNeededCallback: (int gid) {
-              activeDownloadDiagnostics
-                  ?.record('automatic_retry', gid: gid, details: {
-                'completed': task?.completCount,
-                'page_count': task?.fileCount,
-              });
-              logger.d('检测到下载停滞，正在重试 gid:$gid, 时间:${DateTime.now()}');
-
-              // 执行重试
-              Future<void>(() => galleryTaskPaused(gid, silent: true))
-                  .then(
-                      (_) => Future.delayed(const Duration(microseconds: 1000)))
-                  .then((_) => galleryTaskResume(gid));
-            },
-          );
+          // Retries belong to each page and have a bounded backoff. Zero
+          // network speed can mean cache/SAF work, queued work, or backoff;
+          // it must never cancel and restart the whole gallery.
 
           // 更新UI
           _updateDownloadView(['DownloadGalleryItem_$gid']);
@@ -668,9 +668,11 @@ class DownloadController extends GetxController {
   /// 开始下载
   Future<void> _startImageTask({
     required GalleryTask galleryTask,
+    required CancelToken cancelToken,
     int? groupCount,
     List<GalleryImage>? images,
   }) async {
+    cancelToken.throwIfCancellationRequested();
     logger.d(
         '开始下载任务: gid=${galleryTask.gid}, 标题=${galleryTask.title}, 状态=${galleryTask.status}');
 
@@ -699,6 +701,7 @@ class DownloadController extends GetxController {
 
     await isarHelper.putGalleryTaskIsolate(
         galleryTask.copyWith(completCount: completeCount));
+    cancelToken.throwIfCancellationRequested();
 
     // 初始化下载Map
     final initCount =
@@ -707,6 +710,7 @@ class DownloadController extends GetxController {
 
     final putCount =
         await _updateImageTasksByGid(galleryTask.gid, imageTasksOri);
+    cancelToken.throwIfCancellationRequested();
     logger.d('更新图片任务到数据库: gid=${galleryTask.gid}, 更新数量=$putCount');
     activeDownloadDiagnostics
         ?.record('task_start', gid: galleryTask.gid, details: {
@@ -723,13 +727,9 @@ class DownloadController extends GetxController {
 
     _clearErrInfo(galleryTask.gid, updateView: false);
 
-    final CancelToken cancelToken = CancelToken();
-    dState.cancelTokenMap[galleryTask.gid] = cancelToken;
-
     final realDirPath = galleryTask.realDirPath;
     if (realDirPath == null) {
-      logger.e('下载路径为空: gid=${galleryTask.gid}');
-      return;
+      throw StateError('Download path is missing');
     }
 
     final String downloadParentPath = realDirPath;
@@ -739,7 +739,10 @@ class DownloadController extends GetxController {
     logger.d('开始循环下载: gid=${galleryTask.gid}, 文件总数=${galleryTask.fileCount}');
     final plans =
         dState.pendingImageTasks(galleryTask.fileCount, imageTasksOri);
+    final pageFutures = <Future<void>>[];
+    int failedPages = 0;
     for (final plan in plans) {
+      cancelToken.throwIfCancellationRequested();
       final itemSer = plan.ser;
       final oriImageTask = plan.previousTask;
 
@@ -758,7 +761,8 @@ class DownloadController extends GetxController {
       // 缓存命中不需要 showKey；未命中且缺少 showKey 时，图片解析会回退 HTML。
       // 不能等待首张图一定产生 showKey，否则首张图直接复用缓存时可能一直阻塞。
 
-      unawaited(dState.executor.scheduleTask<void>(() async {
+      pageFutures.add(dState.executor.scheduleTask<void>(() async {
+        cancelToken.throwIfCancellationRequested();
         logger.d('开始处理图片任务: gid=${galleryTask.gid}, ser=$itemSer');
         final GalleryImage? preImage =
             await imageProcessor.checkAndGetImageList(
@@ -834,12 +838,13 @@ class DownloadController extends GetxController {
             rethrow;
           }
         } else {
-          logger.e('获取图片信息失败: gid=${galleryTask.gid}, ser=$itemSer');
+          throw StateError('Image metadata is missing');
         }
       }).catchError((Object error, StackTrace stack) {
         if (cancelToken.isCancelled) {
           return;
         }
+        failedPages++;
         activeDownloadDiagnostics?.record('page_error',
             gid: galleryTask.gid,
             page: itemSer,
@@ -849,11 +854,20 @@ class DownloadController extends GetxController {
           _updateErrInfo(
               galleryTask.gid, 'Page $itemSer: ${cause.runtimeType}');
         }
-        // The pending database row remains incomplete for the retry monitor.
-        // Consume the executor Future instead of emitting an unhandled error.
+        // Preserve the incomplete row and finish other pages before pausing.
       }));
     }
     logger.d('所有图片任务已加入队列: gid=${galleryTask.gid}');
+    await Future.wait(pageFutures);
+    if (!cancelToken.isCancelled &&
+        identical(dState.cancelTokenMap[galleryTask.gid], cancelToken) &&
+        failedPages > 0) {
+      activeDownloadDiagnostics?.record('task_paused_after_errors',
+          gid: galleryTask.gid, details: {'failed_pages': failedPages});
+      // A manual resume is allowed, but no timer silently starts another
+      // unlimited retry cycle. Completed files remain untouched.
+      await galleryTaskPaused(galleryTask.gid);
+    }
   }
 
   void _updateErrInfo(int gid, String error) {
