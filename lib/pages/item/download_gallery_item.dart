@@ -125,8 +125,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
 
             late final String parentPath;
             if (dirPath.contains('/document/')) {
-              parentPath = dirPath.substring(
-                  0, dirPath.lastIndexOf('/document/'));
+              parentPath =
+                  dirPath.substring(0, dirPath.lastIndexOf('/document/'));
             } else {
               parentPath = dirPath.substring(0, dirPath.lastIndexOf('%2F'));
             }
@@ -350,10 +350,10 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
                     Row(
                       children: [
                         if (!isComplete)
-                          _buildDownloadCtl(context)
+                          Expanded(child: _buildDownloadCtl(context))
                         else
                           _buildCategory(galleryTask.category),
-                        const Spacer(),
+                        if (isComplete) const Spacer(),
                         Text(
                           isComplete
                               ? '${galleryTask.fileCount}'
@@ -364,7 +364,7 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
                                   CupertinoColors.secondaryLabel, context)),
                         ),
                         // 控制按钮
-                        _getIcon(),
+                        _getIcon(context),
                       ],
                     ),
                   ],
@@ -381,6 +381,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
     if (errInfo != null && errInfo!.isNotEmpty) {
       return Text(
         errInfo ?? '',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
             fontSize: 13,
             color: CupertinoDynamicColor.resolve(
@@ -389,6 +391,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
     } else {
       return Text(
         speed != null ? '$speed/s' : '',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
             fontSize: 13,
             color: CupertinoDynamicColor.resolve(
@@ -450,11 +454,36 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
     );
   }
 
-  Widget _getIcon() {
+  Widget _getIcon(BuildContext context) {
     final GalleryTask? _taskInfo = controller.galleryTaskMap[galleryTask.gid];
     const minSize = 30.0;
     const iconSize = 18.0;
     const buttonPadding = EdgeInsets.only(left: 8.0);
+
+    Widget resumeButton({required bool retry}) => CupertinoTheme(
+          data: const CupertinoThemeData(
+              primaryColor: CupertinoColors.activeGreen),
+          child: CupertinoButton(
+            key: ValueKey('resume-gallery-${galleryTask.gid}'),
+            padding: buttonPadding,
+            minSize: minSize,
+            onPressed: () => controller.resumeGalleryDownload(_taskInfo?.gid),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FaIcon(retry ? FontAwesomeIcons.redo : FontAwesomeIcons.play,
+                    size: iconSize),
+                const SizedBox(width: 4),
+                Text(
+                  retry
+                      ? L10n.of(context).download_retry
+                      : L10n.of(context).download_resume,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        );
 
     final Map<TaskStatus, Widget> statusMap = {
       // 下载时，显示暂停按钮
@@ -463,7 +492,8 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
         child: CupertinoButton(
           padding: buttonPadding,
           minSize: minSize,
-          child: const FaIcon(FontAwesomeIcons.pause,
+          child: const FaIcon(
+            FontAwesomeIcons.pause,
             size: iconSize,
           ),
           onPressed: () {
@@ -478,49 +508,18 @@ class DownloadGalleryItem extends GetView<DownloadViewController> {
         child: CupertinoButton(
           padding: buttonPadding,
           minSize: minSize,
-          child: const FaIcon(FontAwesomeIcons.check,
+          child: const FaIcon(
+            FontAwesomeIcons.check,
             size: iconSize,
           ),
           onPressed: () {},
         ),
       ),
-      // 暂停时 显示继续按钮。按下恢复任务
-      TaskStatus.paused: CupertinoTheme(
-        data:
-            const CupertinoThemeData(primaryColor: CupertinoColors.activeGreen),
-        child: CupertinoButton(
-          padding: buttonPadding,
-          minSize: minSize,
-          child: const FaIcon(FontAwesomeIcons.play,
-            size: iconSize,
-          ),
-          onPressed: () {
-            controller.resumeGalleryDownload(_taskInfo?.gid);
-          },
-        ),
-      ),
-      // 失败时 显示重试按钮。按下重试任务
-      TaskStatus.failed: CupertinoButton(
-        padding: buttonPadding,
-        minSize: minSize,
-        child: const FaIcon(FontAwesomeIcons.play,
-          size: iconSize,
-        ),
-        onPressed: () {
-          controller.retryArchiverDownload(galleryTask.gid);
-        },
-      ),
-      // 取消状态 显示重试按钮。按下重试任务
-      TaskStatus.canceled: CupertinoButton(
-        padding: buttonPadding,
-        minSize: minSize,
-        child: const FaIcon(FontAwesomeIcons.redo,
-          size: iconSize,
-        ),
-        onPressed: () {
-          controller.retryArchiverDownload(galleryTask.gid);
-        },
-      ).paddingSymmetric(),
+      // Error-paused tasks are retryable; ordinary pauses say "Continue".
+      // All gallery states use resume, never archive retry or full restart.
+      TaskStatus.paused: resumeButton(retry: errInfo?.isNotEmpty ?? false),
+      TaskStatus.failed: resumeButton(retry: true),
+      TaskStatus.canceled: resumeButton(retry: true),
       TaskStatus.enqueued: Container(
         width: minSize,
         height: minSize,

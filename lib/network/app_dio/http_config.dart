@@ -19,6 +19,8 @@ class DioHttpConfig {
   final String? proxy;
   final String? cookiesPath;
   final List<Interceptor>? interceptors;
+
+  /// Timeout values are milliseconds, matching the defaults and call sites.
   final int connectTimeout;
   final int sendTimeout;
   final int receiveTimeout;

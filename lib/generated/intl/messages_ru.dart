@@ -150,6 +150,14 @@ class MessageLookup extends MessageLookupByLibrary {
             "Загружать изображения исходного качества"),
         "download_ori_image_summary": MessageLookupByLibrary.simpleMessage(
             "Это опасно! Вы можете получить ошибку 509"),
+        "download_restart_all": MessageLookupByLibrary.simpleMessage(
+          "Загрузить все страницы заново",
+        ),
+        "download_resume": MessageLookupByLibrary.simpleMessage("Продолжить"),
+        "download_retry": MessageLookupByLibrary.simpleMessage("Повторить"),
+        "download_retry_remaining": MessageLookupByLibrary.simpleMessage(
+          "Повторить загрузку незавершённых страниц",
+        ),
         "downloaded": MessageLookupByLibrary.simpleMessage("Скачано"),
         "downloading": MessageLookupByLibrary.simpleMessage("Скачивание"),
         "edit": MessageLookupByLibrary.simpleMessage("Редактировать"),

@@ -148,22 +148,20 @@ class DownloadState {
     ];
   }
 
-  /// The existing gap-retry heuristic refreshes links, not image cache policy.
+  /// Incomplete, previously resolved rows may contain failed/expired URLs.
+  /// Refresh them on resume regardless of page number, after checking cache.
   List<ImageTaskPlan> pendingImageTasks(
     int fileCount,
     List<GalleryImageTask> existing,
   ) {
     final bySer = {for (final task in existing) task.ser: task};
-    final maxComplete = existing
-        .where((task) => task.status == TaskStatus.complete.value)
-        .fold<int>(0, (value, task) => task.ser > value ? task.ser : value);
     return [
       for (int ser = 1; ser <= fileCount; ser++)
         if (bySer[ser]?.status != TaskStatus.complete.value)
           ImageTaskPlan(
             ser: ser,
             previousTask: bySer[ser],
-            refreshLink: ser > 1 && ser < maxComplete + 2,
+            refreshLink: bySer[ser]?.status == TaskStatus.running.value,
           ),
     ];
   }

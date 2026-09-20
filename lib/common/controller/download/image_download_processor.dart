@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:collection/collection.dart';
 import 'package:dio/dio.dart';
 import 'package:eros_fe/common/controller/cache_controller.dart';
 import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
@@ -10,6 +11,7 @@ import 'package:eros_fe/common/controller/download_state.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/index.dart';
 import 'package:eros_fe/network/api.dart';
+import 'package:eros_fe/network/image_retry_policy.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:extended_image/extended_image.dart' show keyToMd5;
@@ -33,11 +35,13 @@ class ImageDownloadInfo {
 
 class ImageDownloadProcessor {
   ImageDownloadProcessor(this.dState, this.cacheController,
-      {DownloadDiagnostics? diagnostics})
+      {DownloadDiagnostics? diagnostics,
+      this.retryPolicy = const ImageRetryPolicy()})
       : diagnostics = diagnostics ?? activeDownloadDiagnostics;
   final DownloadState dState;
   final CacheController cacheController;
   final DownloadDiagnostics? diagnostics;
+  final ImageRetryPolicy retryPolicy;
 
   void _trace(String event, int? gid, int? ser,
       [Map<String, Object?> details = const {}]) {
@@ -74,6 +78,63 @@ class ImageDownloadProcessor {
     bool downloadOrigImage = false,
     // Automatic gap retries refresh links, but must still check the cache.
     bool reDownload = false,
+    CancelToken? cancelToken,
+    FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
+    String? showKey,
+    Future<void> Function(
+            int gid, GalleryImage image, String? fileName, int? status)?
+        putImageTaskCallback,
+  }) async {
+    // A user resume starts a new bounded operation. Failure counts are advanced
+    // on errors, not on link refreshes or page-number heuristics.
+    resetReDownloadCount(gid, preImage.ser);
+    for (int failures = 0;;) {
+      cancelToken?.throwIfCancellationRequested();
+      final latest = dState.downloadMap[gid]
+          ?.firstWhereOrNull((image) => image.ser == preImage.ser);
+      try {
+        await _downloadImageOnce(
+          latest ?? preImage,
+          imageTask,
+          gid,
+          downloadParentPath,
+          maxSer,
+          downloadOrigImage: downloadOrigImage,
+          reDownload: reDownload || failures > 0,
+          cancelToken: cancelToken,
+          onDownloadCompleteWithFileName: onDownloadCompleteWithFileName,
+          showKey: dState.showKeyMap[gid] ?? showKey,
+          putImageTaskCallback: putImageTaskCallback,
+        );
+        return;
+      } catch (error) {
+        cancelToken?.throwIfCancellationRequested();
+        if (!ImageRetryPolicy.isTransient(error)) rethrow;
+        failures++;
+        incrementReDownloadCount(gid, preImage.ser);
+        final retry = retryPolicy.canRetry(error, failures);
+        _trace(
+            retry ? 'page_retry' : 'page_retry_exhausted', gid, preImage.ser, {
+          'attempt': failures,
+          'max_attempts': retryPolicy.maxAttempts,
+          if (retry)
+            'delay_ms': retryPolicy.delays[failures - 1].inMilliseconds,
+          ...DownloadDiagnostics.failure(error),
+        });
+        if (!retry) rethrow;
+        await retryPolicy.wait(failures, cancelToken);
+      }
+    }
+  }
+
+  Future<void> _downloadImageOnce(
+    GalleryImage preImage,
+    GalleryImageTask? imageTask,
+    int gid,
+    String downloadParentPath,
+    int maxSer, {
+    required bool downloadOrigImage,
+    required bool reDownload,
     CancelToken? cancelToken,
     FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
     String? showKey,
@@ -163,53 +224,33 @@ class ImageDownloadProcessor {
       dState.downloadCounts['${gid}_${preImage.ser}'] = count;
     }
 
-    try {
-      // 下载图片
-      await downloadToPath(
-        downloadInfo.imageUrl,
-        downloadParentPath,
-        downloadInfo.fileNameWithoutExtension,
-        cacheKey: _cacheKey(downloadInfo.updatedImage, downloadInfo.imageUrl),
-        gid: gid,
-        ser: preImage.ser,
-        cancelToken: cancelToken,
-        onDownloadCompleteWithFileName: (fileName) async {
-          // 下载成功，重置重试计数
-          resetReDownloadCount(gid, preImage.ser);
+    // All transport failures, including 403 and TLS, use the same bounded
+    // retry path. The next attempt still checks the reader cache first.
+    await downloadToPath(
+      downloadInfo.imageUrl,
+      downloadParentPath,
+      downloadInfo.fileNameWithoutExtension,
+      cacheKey: _cacheKey(downloadInfo.updatedImage, downloadInfo.imageUrl),
+      gid: gid,
+      ser: preImage.ser,
+      cancelToken: cancelToken,
+      onDownloadCompleteWithFileName: (fileName) async {
+        // 下载成功，重置重试计数
+        resetReDownloadCount(gid, preImage.ser);
 
-          if (putImageTaskCallback != null) {
-            await putImageTaskCallback(
-              gid,
-              downloadInfo.updatedImage,
-              fileName,
-              TaskStatus.complete.value,
-            );
-          }
-          await onDownloadCompleteWithFileName?.call(fileName);
-          _trace('page_complete', gid, preImage.ser);
-        },
-        progressCallback: progressCallback,
-      );
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 403) {
-        await handleExpiredLink(
-          preImage,
-          gid,
-          downloadParentPath,
-          downloadInfo.fileNameWithoutExtension,
-          downloadOrigImage,
-          cancelToken,
-          progressCallback,
-          onDownloadCompleteWithFileName,
-          downloadInfo.updatedImage.sourceId,
-          showKey,
-          addAllImagesCallback: dState.rememberResolvedImages,
-          putImageTaskCallback: putImageTaskCallback,
-        );
-      } else {
-        rethrow;
-      }
-    }
+        if (putImageTaskCallback != null) {
+          await putImageTaskCallback(
+            gid,
+            downloadInfo.updatedImage,
+            fileName,
+            TaskStatus.complete.value,
+          );
+        }
+        await onDownloadCompleteWithFileName?.call(fileName);
+        _trace('page_complete', gid, preImage.ser);
+      },
+      progressCallback: progressCallback,
+    );
   }
 
   String? _cacheKey(GalleryImage image, String url) =>
@@ -272,15 +313,14 @@ class ImageDownloadProcessor {
         await cacheController.clearDioCache(path: preImage.href ?? '');
         logger.d(
             'reDownload >>>>>>>>>>>>>>>> imageTask : ${jsonEncode(imageTask)}, preImage: ${jsonEncode(preImage)}');
-
-        // 增加重试计数
-        incrementReDownloadCount(gid, preImage.ser);
       }
 
       // 根据重试次数决定是否使用sourceId
       String? sourceIdToUse;
       if (reDownload && shouldUseSourceId(gid, preImage.ser)) {
-        sourceIdToUse = imageTask?.sourceId ?? preImage.sourceId;
+        sourceIdToUse = (preImage.sourceId?.isNotEmpty ?? false)
+            ? preImage.sourceId
+            : imageTask?.sourceId;
         logger.d('Reached retry limit, using source change: '
             'gid=$gid, ser=${preImage.ser}, sourceId=$sourceIdToUse');
       } else {
@@ -357,101 +397,6 @@ class ImageDownloadProcessor {
       imageUrl: imageUrl,
       updatedImage: updatedImage,
       fileNameWithoutExtension: fileNameWithoutExtension,
-    );
-  }
-
-  /// 处理过期链接
-  Future<void> handleExpiredLink(
-    GalleryImage image,
-    int gid,
-    String downloadParentPath,
-    String fileNameWithoutExtension,
-    bool downloadOrigImage,
-    CancelToken? cancelToken,
-    ProgressCallback progressCallback,
-    FutureOr<void> Function(String)? onDownloadCompleteWithFileName,
-    String? sourceId,
-    String? showKey, {
-    Function? addAllImagesCallback,
-    Future<void> Function(
-            int gid, GalleryImage image, String? fileName, int? status)?
-        putImageTaskCallback,
-  }) async {
-    logger.d('403 $gid.${image.ser}下载链接已经失效 需要更新 ${image.href}');
-    _trace('link_expired', gid, image.ser);
-
-    // 增加重试计数（403错误视为重试）
-    incrementReDownloadCount(gid, image.ser);
-
-    // 根据重试次数决定是否使用sourceId
-    String? sourceIdToUse;
-    if (shouldUseSourceId(gid, image.ser)) {
-      sourceIdToUse = sourceId;
-      logger.d('Reached retry limit due to 403 error, using source change: '
-          'gid=$gid, ser=${image.ser}, sourceId=$sourceIdToUse');
-    } else {
-      sourceIdToUse = null;
-      logger.d(
-          'Not reached retry threshold for 403 error, continuing with original source: '
-          'gid=$gid, ser=${image.ser}, retryCount=${getReDownloadCount(gid, image.ser)}');
-    }
-
-    final GalleryImage imageFetched = await fetchImageInfo(
-      image.href!,
-      itemSer: image.ser,
-      image: image,
-      gid: gid,
-      cancelToken: cancelToken,
-      sourceId: sourceIdToUse, // 使用计算后的sourceId
-      showKey: showKey,
-    );
-    if (cancelToken?.isCancelled ?? false) {
-      throw cancelToken!.cancelError!;
-    }
-
-    // 更新 showkey
-    _updateShowKey(gid, imageFetched.showKey);
-
-    final newImageUrl = downloadOrigImage
-        ? imageFetched.originImageUrl ?? imageFetched.imageUrl!
-        : imageFetched.imageUrl!;
-
-    logger.d('重下载 imageUrl:$newImageUrl');
-
-    if (addAllImagesCallback != null) {
-      addAllImagesCallback(gid, [imageFetched]);
-    }
-
-    if (putImageTaskCallback != null) {
-      await putImageTaskCallback(
-          gid, imageFetched, null, TaskStatus.running.value);
-    }
-
-    await downloadToPath(
-      newImageUrl,
-      downloadParentPath,
-      fileNameWithoutExtension,
-      cacheKey: _cacheKey(imageFetched, newImageUrl),
-      gid: gid,
-      ser: image.ser,
-      cachePhase: 'after_403',
-      cancelToken: cancelToken,
-      onDownloadCompleteWithFileName: (fileName) async {
-        // 下载成功，重置重试计数
-        resetReDownloadCount(gid, image.ser);
-
-        if (putImageTaskCallback != null) {
-          await putImageTaskCallback(
-            gid,
-            imageFetched,
-            fileName,
-            TaskStatus.complete.value,
-          );
-        }
-        await onDownloadCompleteWithFileName?.call(fileName);
-        _trace('page_complete', gid, image.ser);
-      },
-      progressCallback: progressCallback,
     );
   }
 

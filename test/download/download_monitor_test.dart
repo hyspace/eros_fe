@@ -3,38 +3,30 @@ import 'package:eros_fe/common/controller/download_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('cache-only page progress prevents false network-stall retries', () {
+  test('zero speed only updates display, never schedules a retry', () {
     final state = DownloadState();
     final monitor = DownloadMonitor(state);
-    int retries = 0;
-
-    for (int complete = 1; complete <= 20; complete++) {
+    for (int complete = 1; complete <= 100; complete++) {
       state.curComplete[123] = complete;
-      monitor.checkDownloadStall(
-        123,
-        onRetryNeededCallback: (_) => retries++,
-      );
+      monitor.updateDownloadSpeed(123);
     }
 
     expect(state.downloadCounts, isEmpty);
-    expect(state.noSpeed[123], 0);
-    expect(retries, 0);
+    expect(state.noSpeed, isEmpty);
+    expect(state.cancelTokenMap, isEmpty);
+    expect(state.reDownloadCounts, isEmpty);
+    expect(state.lastCounts[123], hasLength(3));
   });
 
-  test('a task with neither network nor page progress still retries', () {
+  test('speed history is bounded for long-running downloads', () {
     final state = DownloadState();
     final monitor = DownloadMonitor(state);
-    int retries = 0;
-
-    state.curComplete[123] = 1;
-    monitor.checkDownloadStall(123);
-    for (int i = 0; i < 5; i++) {
-      monitor.checkDownloadStall(
-        123,
-        onRetryNeededCallback: (_) => retries++,
-      );
+    for (int i = 0; i < 1000; i++) {
+      state.downloadCounts['123_1'] = i * 1024;
+      monitor.updateDownloadSpeed(123);
     }
 
-    expect(retries, 1);
+    expect(state.lastCounts[123], hasLength(3));
+    expect(state.downloadSpeeds[123], isNotEmpty);
   });
 }

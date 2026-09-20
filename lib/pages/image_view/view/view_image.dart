@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
+import 'package:eros_fe/widget/image/reader_image_provider.dart';
 import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/const/const.dart';
@@ -573,15 +574,17 @@ class _ViewImageState extends State<ViewImage> with TickerProviderStateMixin {
 
               logger.t('ImageExtProvider, imageUrl: ${imageData?.imageUrl}');
               Widget image = ImageExtProvider(
+                // Do not multiply the transport budget by the widget's old
+                // default of five automatic source changes.
+                retryCount: kReaderSourceRetries,
                 image: ExtendedResizeImage.resizeIfNeeded(
-                  provider: ExtendedNetworkImageProvider(
+                  provider: ReaderImageProvider(
                     imageData?.imageUrl ?? '',
-                    timeLimit: const Duration(seconds: 5),
-                    cache: true,
-                    retries: 2,
-                    timeRetry: const Duration(seconds: 2),
-                    printError: true,
-                    cacheKey: imageData?.cacheKey,
+                    cacheKey: imageData?.cacheKey ?? '',
+                    page: widget.imageSer,
+                    gid: imageData == null
+                        ? null
+                        : diagnosticGalleryId(imageData),
                   ),
                   // provider: getEhImageProvider(
                   //   imageData?.imageUrl ?? '',

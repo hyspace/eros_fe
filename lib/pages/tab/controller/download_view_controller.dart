@@ -278,6 +278,23 @@ class DownloadViewController extends GetxController {
                     L10n.of(context).open_with_other_apps,
                   ),
                 ),
+              // Resume preserves completed pages. Keep this distinct from
+              // the existing full-redownload action below.
+              if (type == DownloadType.gallery &&
+                  task != null &&
+                  const [
+                    TaskStatus.paused,
+                    TaskStatus.failed,
+                    TaskStatus.canceled,
+                  ].contains(TaskStatus(task.status ?? 0)))
+                CupertinoActionSheetAction(
+                  key: const ValueKey('retry-unfinished-gallery'),
+                  onPressed: () {
+                    Get.back();
+                    resumeGalleryDownload(task.gid);
+                  },
+                  child: Text(L10n.of(context).download_retry_remaining),
+                ),
               // gallery重新下载
               if (type == DownloadType.gallery)
                 CupertinoActionSheetAction(
@@ -286,7 +303,7 @@ class DownloadViewController extends GetxController {
                     restartGalleryDownload(task?.gid);
                   },
                   child: Text(
-                    L10n.of(context).redownload,
+                    L10n.of(context).download_restart_all,
                   ),
                 ),
               // gallery导出

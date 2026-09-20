@@ -4543,6 +4543,41 @@ class L10n {
       args: [],
     );
   }
+  /// `Retry`
+  String get download_retry {
+    return Intl.message('Retry', name: 'download_retry', desc: '', args: []);
+  }
+
+  /// `Continue`
+  String get download_resume {
+    return Intl.message(
+      'Continue',
+      name: 'download_resume',
+      desc: '',
+      args: [],
+    );
+  }
+
+  /// `Retry unfinished pages`
+  String get download_retry_remaining {
+    return Intl.message(
+      'Retry unfinished pages',
+      name: 'download_retry_remaining',
+      desc: '',
+      args: [],
+    );
+  }
+
+  /// `Redownload all pages`
+  String get download_restart_all {
+    return Intl.message(
+      'Redownload all pages',
+      name: 'download_restart_all',
+      desc: '',
+      args: [],
+    );
+  }
+
 }
 
 class AppLocalizationDelegate extends LocalizationsDelegate<L10n> {

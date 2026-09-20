@@ -11,6 +11,7 @@ import 'package:eros_fe/common/controller/download_state.dart';
 import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/gallery_image.dart';
 import 'package:eros_fe/network/api.dart';
+import 'package:eros_fe/network/image_retry_policy.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:executor/executor.dart';
 import 'package:extended_image/extended_image.dart';
@@ -32,8 +33,7 @@ const _safChannel =
     MethodChannel('io.alexrintt.plugins/sharedstorage/documentfile');
 const _pathChannel = MethodChannel('plugins.flutter.io/path_provider');
 final _png = base64Decode(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF'
-  'gAI/ScLbtAAAAABJRU5ErkJggg==',
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
 );
 
 void main() {
@@ -825,7 +825,11 @@ class _SpyProcessor extends ImageDownloadProcessor {
 class _PipelineProcessor extends ImageDownloadProcessor {
   _PipelineProcessor(
       DownloadState state, this.catalog, DownloadDiagnostics? diagnostics)
-      : super(state, _CacheController(), diagnostics: diagnostics);
+      : super(state, _CacheController(),
+            diagnostics: diagnostics,
+            // These fixtures model interruption + a later user resume.
+            // Automatic retries are covered in handshake_recovery_test.
+            retryPolicy: const ImageRetryPolicy(delays: []));
 
   final Map<int, GalleryImage> catalog;
   int failuresRemaining = 0;

@@ -122,6 +122,10 @@ class MessageLookup extends MessageLookupByLibrary {
         "download_ori_image": MessageLookupByLibrary.simpleMessage("下載原圖"),
         "download_ori_image_summary":
             MessageLookupByLibrary.simpleMessage("危險! 會導致下載配額迅速流失, 出現 509 錯誤"),
+        "download_restart_all": MessageLookupByLibrary.simpleMessage("全部重新下載"),
+        "download_resume": MessageLookupByLibrary.simpleMessage("繼續"),
+        "download_retry": MessageLookupByLibrary.simpleMessage("重試"),
+        "download_retry_remaining": MessageLookupByLibrary.simpleMessage("重試未完成頁"),
         "downloaded": MessageLookupByLibrary.simpleMessage("已下載"),
         "downloading": MessageLookupByLibrary.simpleMessage("下載中"),
         "edit": MessageLookupByLibrary.simpleMessage("編輯"),

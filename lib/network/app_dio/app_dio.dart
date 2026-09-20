@@ -14,6 +14,7 @@ import 'package:eros_fe/const/const.dart';
 import 'package:eros_fe/network/app_dio/proxy.dart';
 import 'package:eros_fe/network/dio_interceptor/domain_fronting/domain_fronting.dart';
 import 'package:eros_fe/network/dio_interceptor/eh_cookie_interceptor/eh_cookie_interceptor.dart';
+import 'package:eros_fe/network/dio_interceptor/network_diagnostics.dart';
 import 'package:eros_fe/network/dio_interceptor/rate_limit/rate_limit_interceptor.dart';
 import 'package:eros_fe/network/dio_interceptor/rate_limit/token_bucket_interceptor.dart';
 import 'package:eros_fe/utils/logger.dart';
@@ -47,13 +48,13 @@ class AppDio with DioMixin implements Dio {
       baseUrl: dioConfig?.baseUrl ?? '',
       contentType: dioConfig?.contentType ?? Headers.formUrlEncodedContentType,
       connectTimeout: dioConfig?.connectTimeout != null
-          ? Duration(seconds: dioConfig!.connectTimeout)
+          ? Duration(milliseconds: dioConfig!.connectTimeout)
           : null,
       sendTimeout: dioConfig?.sendTimeout != null
-          ? Duration(seconds: dioConfig!.sendTimeout)
+          ? Duration(milliseconds: dioConfig!.sendTimeout)
           : null,
       receiveTimeout: dioConfig?.receiveTimeout != null
-          ? Duration(seconds: dioConfig!.receiveTimeout)
+          ? Duration(milliseconds: dioConfig!.receiveTimeout)
           : null,
       headers: <String, String>{
         'User-Agent': EHConst.CHROME_USER_AGENT,
@@ -209,6 +210,10 @@ class AppDio with DioMixin implements Dio {
       // 在其他插件添加完毕后再添加，以确保执行顺序正确
       domainFronting.bind(interceptors);
     }
+    interceptors.add(NetworkDiagnosticsInterceptor(
+      adapter: httpClientAdapter is NativeAdapter ? 'native' : 'proxy_io',
+      proxy: dioConfig?.proxy,
+    ));
   }
 
   /// DioMixin 没有实现下载

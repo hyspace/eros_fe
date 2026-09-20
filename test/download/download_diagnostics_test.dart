@@ -66,6 +66,21 @@ void main() {
     expect(DownloadDiagnostics.endpoint('https://host:invalid/a'), isEmpty);
   });
 
+  test('TLS error nested in OSError is classified without exposing its text',
+      () {
+    final details = DownloadDiagnostics.failure(const HandshakeException(
+      'Handshake error in client',
+      OSError('PRIVATE WRONG_VERSION_NUMBER(tls_record.cc:127)'),
+    ));
+    expect(details['tls_error'], 'wrong_version_number');
+    expect(details.toString(), isNot(contains('PRIVATE')));
+    expect(
+        DownloadDiagnostics.proxyType('PROXY user:PRIVATE@host:8080'), 'proxy');
+    expect(DownloadDiagnostics.proxyType('SOCKS5 user:PRIVATE@host:1080'),
+        'socks5');
+    expect(DownloadDiagnostics.proxyType('PRIVATE'), 'unspecified');
+  });
+
   test('diagnostic write failure does not fail downloads or poison the queue',
       () async {
     final blocker = await File('${directory.path}/blocked').writeAsString('x');
