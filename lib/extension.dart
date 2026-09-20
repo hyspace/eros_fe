@@ -6,6 +6,7 @@ import 'package:eros_fe/common/controller/tag_controller.dart';
 import 'package:eros_fe/common/service/dns_service.dart';
 import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/network/reader_image_cache.dart';
 import 'package:eros_fe/pages/image_view/common.dart';
 import 'package:eros_fe/pages/tab/fetch_list.dart';
 import 'package:eros_fe/store/db/entity/tag_translat.dart';
@@ -689,11 +690,11 @@ extension EhT<T> on T {
 
 extension GalleryImageExt on GalleryImage {
   String getCacheKey(String url) {
-    final bool isOriginImage = url == originImageUrl;
-    final regExpXres = RegExp(r'xres=(\d+)');
-    final xres = regExpXres.firstMatch(url)?.group(1) ?? '';
-    return '${Uri.encodeComponent(href ?? '')}_${isOriginImage ? 'origin' : xres}';
+    return getCacheSpec(url).key;
   }
+
+  ReaderCacheSpec getCacheSpec(String url) =>
+      ReaderCacheSpec.fromImage(this, url);
 
   String get cacheKey {
     return getCacheKey(imageUrl ?? '');

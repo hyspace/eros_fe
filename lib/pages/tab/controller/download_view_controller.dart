@@ -9,6 +9,7 @@ import 'package:eros_fe/common/global.dart';
 import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/generated/l10n.dart';
 import 'package:eros_fe/models/index.dart';
+import 'package:eros_fe/network/image_endpoint_recovery.dart';
 import 'package:eros_fe/pages/tab/view/download_page.dart';
 import 'package:eros_fe/route/routes.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
@@ -581,6 +582,8 @@ class DownloadViewController extends GetxController {
   // gallery 恢复任务
   void resumeGalleryDownload(int? gid) {
     if (gid != null) {
+      // An explicit user retry may immediately re-test a repaired endpoint.
+      imageEndpointRecovery.clear();
       _downloadController.galleryTaskResume(gid);
     }
     update(['${idDownloadGalleryItem}_$gid']);

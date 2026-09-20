@@ -45,9 +45,9 @@ void main() {
       final plan = fixture.plan;
       expect(plan.refreshLink, true); // Includes first, last and single pages.
       await fixture.run();
-      expect(fixture.processor.transfers, 4);
-      expect(fixture.processor.fetches, 4);
-      expect(fixture.processor.sources, [null, null, null, 'fresh-source']);
+      expect(fixture.processor.transfers, 2);
+      expect(fixture.processor.fetches, 2);
+      expect(fixture.processor.sources, [null, 'fresh-source']);
       expect(fixture.stored[scenario.$1]!.status, TaskStatus.complete.value);
       expect(fixture.completions, 1);
       expect(
@@ -76,7 +76,7 @@ void main() {
     await expectLater(fixture.run(), throwsA(isA<DioException>()));
     fixture.processor.alwaysFail = false;
     await fixture.run();
-    expect(fixture.processor.transfers, 8);
+    expect(fixture.processor.transfers, 6);
     expect(fixture.completions, 1);
   });
 

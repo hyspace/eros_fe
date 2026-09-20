@@ -5,7 +5,9 @@ import 'dart:ui' as ui;
 
 import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/common/global.dart';
+import 'package:eros_fe/network/image_endpoint_recovery.dart';
 import 'package:eros_fe/network/image_retry_policy.dart';
+import 'package:eros_fe/network/reader_image_cache.dart';
 import 'package:eros_fe/network/reader_image_transport.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/foundation.dart';
@@ -19,15 +21,16 @@ const kReaderRequestRetryDelays = [
   Duration(seconds: 4),
 ];
 
-/// Reader + preload share this provider and the existing extended-image disk
-/// keys. Only the transport is replaced; downloaded/offline image paths remain
-/// unchanged. Failed loads propagate their original exception, not "null".
+/// Reader + preload share the same representation keys and read legacy
+/// extended-image entries. Downloaded/offline image paths remain unchanged.
+/// Failed loads propagate their original exception, not "null".
 @immutable
 class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
     with ExtendedImageProvider<ReaderImageProvider> {
   const ReaderImageProvider(
     this.url, {
     required this.cacheKey,
+    this.cacheSpec,
     this.gid,
     this.page,
     this.phase = 'reader',
@@ -39,6 +42,7 @@ class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
 
   final String url;
   final String cacheKey;
+  final ReaderCacheSpec? cacheSpec;
   final int? gid;
   final int? page;
   final String phase;
@@ -52,7 +56,7 @@ class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
   String? get imageCacheName => null;
 
   Future<File> _cacheFile() async {
-    // Keep exactly the old custom key, not another hash of it.
+    // Custom keys (legacy or representation-based) are not hashed again.
     if (cacheKey.isEmpty || path.basename(cacheKey) != cacheKey) {
       throw const FormatException('Invalid image cache key');
     }
@@ -61,21 +65,20 @@ class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
   }
 
   Future<Uint8List?> _cachedBytes() async {
-    try {
-      final file = await _cacheFile();
-      if (await file.exists()) {
-        final bytes = await file.readAsBytes();
-        if (bytes.isNotEmpty) return bytes;
-      }
-    } on FileSystemException {
-      // An evicted/unreadable cache is a miss, not a network failure.
-    }
-    return null;
+    return readReaderImageCache(url: url, cacheKey: cacheKey, spec: cacheSpec);
   }
 
   Future<void> _saveCache(Uint8List bytes) async {
     File? temporary;
     try {
+      // Never publish bytes under a representation key they do not match.
+      if (cacheSpec != null && !await cacheSpec!.matches(bytes)) {
+        activeDownloadDiagnostics?.record('reader_cache_write_skipped',
+            gid: gid,
+            page: page,
+            details: {'phase': phase, 'reason': 'dimensions_mismatch'});
+        return;
+      }
       final target = await _cacheFile();
       await target.parent.create(recursive: true);
       // A reader and preloader may finish concurrently. Publish only complete
@@ -99,11 +102,11 @@ class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
     }
   }
 
-  Future<Uint8List> _networkBytes(
-      StreamController<ImageChunkEvent>? chunks) async {
+  Future<Uint8List> _networkBytes(StreamController<ImageChunkEvent>? chunks,
+      {bool useCache = true}) async {
     for (int failures = 0;;) {
       // A preload/download may have populated the same cache during backoff.
-      final cached = await _cachedBytes();
+      final cached = useCache ? await _cachedBytes() : null;
       if (cached != null) return cached;
       try {
         return await transport.fetch(
@@ -119,6 +122,9 @@ class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
           )),
         );
       } catch (error) {
+        // Let the UI's single source change run now instead of spending the
+        // whole retry budget on the same known-bad URL.
+        if (imageEndpointRecovery.needsNewSource(error)) rethrow;
         failures++;
         final transient = error is ReaderImageHttpException
             ? ImageRetryPolicy.retryableStatus(error.statusCode)
@@ -140,16 +146,18 @@ class ReaderImageProvider extends ImageProvider<ReaderImageProvider>
   Future<ui.Codec> _load(StreamController<ImageChunkEvent> chunks,
       ImageDecoderCallback decode) async {
     try {
+      bool corruptCache = false;
       final cached = await _cachedBytes();
       if (cached != null) {
         try {
           return await instantiateImageCodec(cached, decode);
         } catch (_) {
+          corruptCache = true;
           // Remove only this corrupt entry, never the user's whole cache.
           await clearDiskCachedImage(url, cacheKey: cacheKey);
         }
       }
-      final bytes = await _networkBytes(chunks);
+      final bytes = await _networkBytes(chunks, useCache: !corruptCache);
       final codec = await instantiateImageCodec(bytes, decode);
       await _saveCache(bytes);
       return codec;
