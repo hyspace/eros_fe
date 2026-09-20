@@ -43,6 +43,7 @@ class ReaderImageTransport {
       sendTimeout: headerTimeout,
       responseType: ResponseType.stream,
       followRedirects: false,
+      extra: {'feImagePhase': phase},
       validateStatus: (_) => true,
     ))
       ..httpClientAdapter = ImageTransferAdapter(
@@ -50,6 +51,7 @@ class ReaderImageTransport {
         // Retain the pre-existing reader trust policy; never use TLS version
         // downgrades or plaintext fallback as a handshake-error workaround.
         skipCertificate: true,
+        diagnostics: diagnostics,
       );
     final watch = Stopwatch()..start();
     int redirects = 0;

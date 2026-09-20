@@ -12,6 +12,7 @@ import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/gallery_image.dart';
 import 'package:eros_fe/network/api.dart';
 import 'package:eros_fe/network/image_retry_policy.dart';
+import 'package:eros_fe/network/reader_image_cache.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:executor/executor.dart';
 import 'package:extended_image/extended_image.dart';
@@ -784,6 +785,7 @@ class _SpyProcessor extends ImageDownloadProcessor {
     String parentPath,
     String fileNameWithoutExtension, {
     String? cacheKey,
+    ReaderCacheSpec? cacheSpec,
     bool useCache = true,
     int? gid,
     int? ser,
@@ -807,6 +809,7 @@ class _SpyProcessor extends ImageDownloadProcessor {
         parentPath,
         fileNameWithoutExtension,
         cacheKey: cacheKey,
+        cacheSpec: cacheSpec,
         useCache: useCache,
         gid: gid,
         ser: ser,

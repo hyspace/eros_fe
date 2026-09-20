@@ -581,6 +581,7 @@ class _ViewImageState extends State<ViewImage> with TickerProviderStateMixin {
                   provider: ReaderImageProvider(
                     imageData?.imageUrl ?? '',
                     cacheKey: imageData?.cacheKey ?? '',
+                    cacheSpec: imageData?.getCacheSpec(imageData.imageUrl ?? ''),
                     page: widget.imageSer,
                     gid: imageData == null
                         ? null

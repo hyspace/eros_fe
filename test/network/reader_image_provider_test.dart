@@ -106,13 +106,21 @@ void main() {
     expect(await cached.readAsBytes(), _png);
   });
 
-  test('reader preserves TLS error and stops after its finite retry budget',
+  test(
+      'reader preserves wrong-version cause and requests source change immediately',
       () async {
     transport.error = const HandshakeException('WRONG_VERSION_NUMBER');
     await expectLater(_resolve(provider()), throwsA(same(transport.error)));
-    expect(transport.requests, 3);
+    expect(transport.requests, 1);
     expect(
         await File(path.join(temp.path, 'cacheimage', _key)).exists(), false);
+  });
+
+  test('other transient TLS errors retain the finite retry budget', () async {
+    transport.error =
+        const HandshakeException('other transient handshake error');
+    await expectLater(_resolve(provider()), throwsA(same(transport.error)));
+    expect(transport.requests, 3);
   });
 
   test('reader and preload share their in-memory key', () {

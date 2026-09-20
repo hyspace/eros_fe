@@ -11,7 +11,9 @@ import 'package:eros_fe/common/controller/download_state.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/index.dart';
 import 'package:eros_fe/network/api.dart';
+import 'package:eros_fe/network/image_endpoint_recovery.dart';
 import 'package:eros_fe/network/image_retry_policy.dart';
+import 'package:eros_fe/network/reader_image_cache.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/store/db/entity/gallery_image_task.dart';
 import 'package:extended_image/extended_image.dart' show keyToMd5;
@@ -42,6 +44,7 @@ class ImageDownloadProcessor {
   final CacheController cacheController;
   final DownloadDiagnostics? diagnostics;
   final ImageRetryPolicy retryPolicy;
+  final _fastSourcePages = <String>{};
 
   void _trace(String event, int? gid, int? ser,
       [Map<String, Object?> details = const {}]) {
@@ -60,8 +63,10 @@ class ImageDownloadProcessor {
           {
             'phase': phase,
             'key_type': keyType,
+            // For aliases this is the requested representation, not a raw
+            // legacy filename (which contains a signed page URL).
             'key_hash':
-                keyToMd5(keyType == 'reader' ? cacheKey! : keyToMd5(url)),
+                keyToMd5(keyType == 'legacy' ? keyToMd5(url) : cacheKey!),
             'reason': outcome,
             'bytes': bytes,
           },
@@ -112,6 +117,9 @@ class ImageDownloadProcessor {
         if (!ImageRetryPolicy.isTransient(error)) rethrow;
         failures++;
         incrementReDownloadCount(gid, preImage.ser);
+        if (imageEndpointRecovery.needsNewSource(error)) {
+          _fastSourcePages.add('${gid}_${preImage.ser}');
+        }
         final retry = retryPolicy.canRetry(error, failures);
         _trace(
             retry ? 'page_retry' : 'page_retry_exhausted', gid, preImage.ser, {
@@ -166,6 +174,7 @@ class ImageDownloadProcessor {
       final savedPath = await Api.saveImageFromExtendedCache(
         imageUrl: cachedUrl,
         cacheKey: _cacheKey(preImage, cachedUrl),
+        cacheSpec: preImage.getCacheSpec(cachedUrl),
         parentPath: downloadParentPath,
         fileNameWithoutExtension: fileName != null && fileName.isNotEmpty
             ? path.basenameWithoutExtension(fileName)
@@ -231,6 +240,7 @@ class ImageDownloadProcessor {
       downloadParentPath,
       downloadInfo.fileNameWithoutExtension,
       cacheKey: _cacheKey(downloadInfo.updatedImage, downloadInfo.imageUrl),
+      cacheSpec: downloadInfo.updatedImage.getCacheSpec(downloadInfo.imageUrl),
       gid: gid,
       ser: preImage.ser,
       cancelToken: cancelToken,
@@ -297,7 +307,15 @@ class ImageDownloadProcessor {
       logger.t('使用原有url下载 ${preImage.ser} DL $imageUrlFromTask');
 
       imageUrl = imageUrlFromTask;
-      updatedImage = preImage.copyWith(imageUrl: imageUrl.oN);
+      updatedImage = preImage.copyWith(
+        imageUrl: imageUrl.oN,
+        // Dimensions from a different resolved URL are not evidence about
+        // the representation saved in a resumed task.
+        imageWidth:
+            (imageUrl == preImage.imageUrl ? preImage.imageWidth : null).oN,
+        imageHeight:
+            (imageUrl == preImage.imageUrl ? preImage.imageHeight : null).oN,
+      );
       if (imageTask.filePath != null && imageTask.filePath!.isNotEmpty) {
         fileNameWithoutExtension =
             path.basenameWithoutExtension(imageTask.filePath!);
@@ -406,6 +424,7 @@ class ImageDownloadProcessor {
     String parentPath,
     String fileNameWithoutExtension, {
     String? cacheKey,
+    ReaderCacheSpec? cacheSpec,
     bool useCache = true,
     int? gid,
     int? ser,
@@ -422,6 +441,7 @@ class ImageDownloadProcessor {
       final filePath = await Api.saveImageFromExtendedCache(
         imageUrl: url,
         cacheKey: cacheKey,
+        cacheSpec: cacheSpec,
         parentPath: parentPath,
         fileNameWithoutExtension: fileNameWithoutExtension,
         cancelToken: cancelToken,
@@ -705,6 +725,7 @@ class ImageDownloadProcessor {
   void resetReDownloadCount(int gid, int ser) {
     final key = '${gid}_$ser';
     dState.reDownloadCounts.remove(key);
+    _fastSourcePages.remove(key);
     logger.t('Reset image retry count: gid=$gid, ser=$ser');
   }
 
@@ -712,13 +733,15 @@ class ImageDownloadProcessor {
   void clearGalleryReDownloadCounts(int gid) {
     dState.reDownloadCounts
         .removeWhere((key, value) => key.startsWith('${gid}_'));
+    _fastSourcePages.removeWhere((key) => key.startsWith('${gid}_'));
     logger.d('Cleared all retry counts for gallery: gid=$gid');
   }
 
   /// 判断是否应该使用换源
   bool shouldUseSourceId(int gid, int ser) {
     final count = getReDownloadCount(gid, ser);
-    final shouldUse = count >= kMaxReDownloadRetries;
+    final shouldUse = _fastSourcePages.contains('${gid}_$ser') ||
+        count >= kMaxReDownloadRetries;
     logger.d(
         'Source change decision: gid=$gid, ser=$ser, retryCount=$count, threshold=$kMaxReDownloadRetries, useSourceId=$shouldUse');
     return shouldUse;

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/index.dart';
+import 'package:eros_fe/network/preload_source_recovery.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/utils/logger.dart';
 import 'package:eros_fe/widget/image/reader_image_provider.dart';
@@ -116,6 +117,7 @@ class GalleryPara {
           originImageUrl: imageFetch?.originImageUrl.oN,
           filename: imageFetch?.filename.oN,
           showKey: imageFetch?.showKey.oN,
+          sourceId: imageFetch?.sourceId.oN,
         );
 
         _processingSerSet.remove(ser);
@@ -149,26 +151,43 @@ class GalleryPara {
     String url,
     GalleryImage image,
   ) async {
-    final cacheKey = image.getCacheKey(url);
-    logger.d('_precacheSingleImage, 开始预载图片 $url,\ncacheKey: $cacheKey');
-    final ImageProvider imageProvider = ReaderImageProvider(
-      url,
-      cacheKey: cacheKey,
-      page: image.ser,
-      gid: diagnosticGalleryId(image),
-      phase: 'preload',
-    );
-
     /// 预缓存图片
     try {
-      // Flutter precacheImage otherwise completes successfully on failure.
-      Object? failure;
-      await precacheImage(imageProvider, Get.context!,
-          onError: (error, _) => failure = error);
-      if (failure != null) throw failure!;
-      await recordReaderCache(image, phase: 'preload');
-      logger.d('预载图片完成 $url');
-      return image.copyWith(completeCache: true.oN);
+      final loaded = await preloadWithSourceRecovery(
+        image,
+        load: (current) async {
+          final currentUrl = current.imageUrl ?? '';
+          final provider = ReaderImageProvider(
+            currentUrl,
+            cacheKey: current.getCacheKey(currentUrl),
+            cacheSpec: current.getCacheSpec(currentUrl),
+            page: current.ser,
+            gid: diagnosticGalleryId(current),
+            phase: 'preload',
+          );
+          Object? failure;
+          await precacheImage(provider, Get.context!,
+              onError: (error, _) => failure = error);
+          if (failure != null) throw failure!;
+          await recordReaderCache(current, phase: 'preload');
+        },
+        changeSource: (current) async {
+          final updated = await fetchImageInfoByHtml(current.href!,
+              refresh: true, sourceId: current.sourceId);
+          if (updated == null) throw StateError('Preload source unavailable');
+          final original = current.imageUrl != null &&
+              current.imageUrl == current.originImageUrl;
+          if (original && (updated.originImageUrl?.isEmpty ?? true)) {
+            throw StateError('Original preload source unavailable');
+          }
+          return updated.copyWith(
+            ser: current.ser,
+            href: current.href.oN,
+            imageUrl: (original ? updated.originImageUrl : updated.imageUrl).oN,
+          );
+        },
+      );
+      return loaded.copyWith(completeCache: true.oN);
     } catch (e) {
       logger.e('Preload failed: ${DownloadDiagnostics.failure(e)}');
       return null;

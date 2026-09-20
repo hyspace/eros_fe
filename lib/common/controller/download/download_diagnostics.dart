@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/gallery_image.dart';
+import 'package:eros_fe/network/reader_image_cache.dart';
 import 'package:extended_image/extended_image.dart';
 
 const downloadDiagnosticsEnabled =
@@ -146,6 +147,17 @@ Future<void> recordReaderCache(
   }
   try {
     final key = image.getCacheKey(url);
+    String? keyType;
+    final bytes = await readReaderImageCache(
+      url: url,
+      cacheKey: key,
+      spec: image.getCacheSpec(url),
+      onLookup: (type, outcome, _) {
+        if (outcome == 'found') {
+          keyType = type;
+        }
+      },
+    );
     diagnostics.record(
       'reader_ready',
       gid: diagnosticGalleryId(image),
@@ -153,8 +165,9 @@ Future<void> recordReaderCache(
       details: {
         'phase': phase,
         'key_hash': keyToMd5(key),
+        if (keyType != null) 'key_type': keyType,
         'original': url == image.originImageUrl,
-        'disk_cached': await cachedImageExists(url, cacheKey: key),
+        'disk_cached': bytes != null,
       },
     );
   } catch (_) {

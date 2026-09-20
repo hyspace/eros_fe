@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io' as io;
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart' as dio;
@@ -12,6 +11,7 @@ import 'package:dio_cache_interceptor_hive_store/dio_cache_interceptor_hive_stor
 import 'package:eros_fe/common/service/ehsetting_service.dart';
 import 'package:eros_fe/component/exception/error.dart';
 import 'package:eros_fe/index.dart';
+import 'package:eros_fe/network/reader_image_cache.dart';
 import 'package:eros_fe/network/request.dart';
 import 'package:eros_fe/pages/setting/controller/eh_mysettings_controller.dart';
 import 'package:eros_fe/store/db/entity/tag_translat.dart';
@@ -416,6 +416,7 @@ class Api {
     required String parentPath,
     required String fileNameWithoutExtension,
     String? cacheKey,
+    ReaderCacheSpec? cacheSpec,
     CancelToken? cancelToken,
     void Function(String keyType, String outcome, int bytes)? onCacheLookup,
   }) async {
@@ -426,39 +427,18 @@ class Api {
     }
 
     checkCancelled();
-    // 阅读使用自定义 key；旧版本的 URL 缓存仍作为回退。
-    final keys = <String?>[
-      if (cacheKey != null && cacheKey.isNotEmpty) cacheKey,
-      if (imageUrl.isNotEmpty) null,
-    ];
-    for (final key in keys) {
-      final keyType = key == null ? 'legacy' : 'reader';
-      final imageFile = await getCachedImageFile(imageUrl, cacheKey: key);
-      if (imageFile == null) {
-        onCacheLookup?.call(keyType, 'missing', 0);
-        continue;
-      }
-
-      late final Uint8List bytes;
-      try {
-        bytes = await imageFile.readAsBytes();
-      } on FileSystemException {
-        // 缓存可能在查找后被系统或用户清理，不影响网络回退。
-        onCacheLookup?.call(keyType, 'read_error', 0);
-        continue;
-      }
+    final bytes = await readReaderImageCache(
+      url: imageUrl,
+      cacheKey: cacheKey,
+      spec: cacheSpec,
+      onLookup: onCacheLookup,
+    );
+    if (bytes != null) {
       final mimeType = lookupMimeType('', headerBytes: bytes.take(12).toList());
-      if (bytes.isEmpty || mimeType == null || !mimeType.startsWith('image/')) {
-        onCacheLookup?.call(
-            keyType, bytes.isEmpty ? 'empty' : 'not_image', bytes.length);
-        continue;
-      }
       checkCancelled();
-      onCacheLookup?.call(keyType, 'found', bytes.length);
 
-      final ext = extensionFromMime(mimeType) ?? mimeType.split('/').last;
+      final ext = extensionFromMime(mimeType!) ?? mimeType.split('/').last;
       final fileName = '$fileNameWithoutExtension.$ext';
-      logger.d('from cache \n$imageUrl, key: $key');
 
       if (parentPath.isContentUri) {
         final result = await ss.createFileAsBytes(
