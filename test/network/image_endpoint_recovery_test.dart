@@ -7,7 +7,6 @@ import 'package:eros_fe/extension.dart';
 import 'package:eros_fe/models/gallery_image.dart';
 import 'package:eros_fe/network/image_endpoint_recovery.dart';
 import 'package:eros_fe/network/image_transfer_adapter.dart';
-import 'package:eros_fe/network/native_sni_compatibility.dart';
 import 'package:eros_fe/network/preload_source_recovery.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -60,22 +59,6 @@ void main() {
     expect(recovery.shouldAvoid(_uri.replace(host: 'c.hath.network'), 'DIRECT'),
         false);
   });
-  test('compatibility only allows HTTPS H@H without userinfo or explicit proxy',
-      () {
-    final recovery = ImageEndpointRecovery();
-    expect(recovery.canUseCompatibility(_uri, 'DIRECT'), true);
-    for (final uri in [
-      _uri.replace(scheme: 'http'),
-      _uri.replace(port: 8443),
-      _uri.replace(userInfo: 'private'),
-      _uri.replace(host: 'hath.network.evil.test'),
-      Uri.parse('https://forums.e-hentai.org/'),
-    ]) {
-      expect(recovery.canUseCompatibility(uri, 'DIRECT'), false);
-    }
-    expect(recovery.canUseCompatibility(_uri, 'SOCKS5 private:8888'), false);
-    expect(recovery.canUseCompatibility(_uri, 'PROXY private:8888'), false);
-  });
   test('a fullimg redirect failure cannot quarantine the gallery/API origin',
       () {
     final recovery = ImageEndpointRecovery();
@@ -96,137 +79,113 @@ void main() {
     return response.stream.expand((b) => b).toList();
   }
 
-  test(
-      'healthy endpoints never enter compatibility; wrong version gets one fallback',
+  test('healthy endpoint uses only the normal transport and closes it',
       () async {
     final normal = _Normal();
-    final compat = _Compat();
+    final adapter = ImageTransferAdapter(
+        proxy: 'DIRECT',
+        skipCertificate: false,
+        recovery: ImageEndpointRecovery(),
+        normalAdapterFactory: () => normal);
+    expect(await run(adapter), [1, 2]);
+    expect(normal.calls, 1);
+    expect(normal.closes, 1);
+    adapter.close();
+  });
+  test('wrong version makes one attempt, preserves its cause and cools down',
+      () async {
+    final normal = _Normal()..failure = _wrong;
     final recovery = ImageEndpointRecovery();
     final adapter = ImageTransferAdapter(
         proxy: 'DIRECT',
-        skipCertificate: true,
+        skipCertificate: false,
         recovery: recovery,
-        compatibility: compat,
-        normalAdapterFactory: () => normal);
-    expect(await run(adapter), [1, 2]);
-    expect(compat.calls, 0);
-    normal.failure = _wrong;
-    expect(await run(adapter), [3, 4]);
-    expect(compat.calls, 1);
-    expect(recovery.shouldAvoid(_uri, 'DIRECT'), false);
-    // Successful compatibility does not stick: a repaired server is used normally.
-    normal.failure = null;
-    expect(await run(adapter), [1, 2]);
-    expect(compat.calls, 1);
-    adapter.close();
-  });
-  test(
-      'failed fallback preserves initial error and briefly avoids only that host',
-      () async {
-    final normal = _Normal()..failure = _wrong;
-    final compat = _Compat()
-      ..failure = StateError('strict verification failed');
-    final adapter = ImageTransferAdapter(
-        proxy: 'DIRECT',
-        skipCertificate: true,
-        recovery: ImageEndpointRecovery(),
-        compatibility: compat,
         normalAdapterFactory: () => normal);
     await expectLater(run(adapter), throwsA(same(_wrong)));
+    expect(normal.calls, 1);
+    expect(normal.closes, 1);
+    expect(recovery.needsNewSource(_wrong), true);
     await expectLater(run(adapter), throwsA(isA<ImageEndpointUnavailable>()));
     expect(normal.calls, 1);
-    expect(compat.calls, 1);
+    recovery.clear();
+    normal.failure = null;
+    expect(await run(adapter), [1, 2]);
+    expect(normal.calls, 2);
     adapter.close();
   });
-  test(
-      'both independent switches can disable the workaround without changing ordinary IO',
+  test('disabling fast failover still never adds a fallback connection',
       () async {
     final normal = _Normal()..failure = _wrong;
-    final compat = _Compat();
+    final recovery = ImageEndpointRecovery(fastFailover: false);
     final adapter = ImageTransferAdapter(
         proxy: 'DIRECT',
-        skipCertificate: true,
-        recovery:
-            ImageEndpointRecovery(fastFailover: false, sniCompatibility: false),
-        compatibility: compat,
+        skipCertificate: false,
+        recovery: recovery,
         normalAdapterFactory: () => normal);
     for (int i = 0; i < 2; i++) {
       await expectLater(run(adapter), throwsA(same(_wrong)));
     }
     expect(normal.calls, 2);
-    expect(compat.calls, 0);
+    expect(recovery.shouldAvoid(_uri, 'DIRECT'), false);
+    expect(recovery.needsNewSource(_wrong), false);
     adapter.close();
   });
-  test('other errors, POSTs and proxies cannot enter the no-SNI path',
+  test(
+      'certificate errors do not enter wrong-version cooldown or change source',
       () async {
-    for (final scenario in [
-      ('DIRECT', 'GET', const HandshakeException('certificate_verify_failed')),
-      ('DIRECT', 'POST', _wrong),
-      ('PROXY private:123', 'GET', _wrong),
-    ]) {
-      final normal = _Normal()..failure = scenario.$3;
-      final compat = _Compat();
-      final adapter = ImageTransferAdapter(
-          proxy: scenario.$1,
-          skipCertificate: true,
-          recovery: ImageEndpointRecovery(),
-          compatibility: compat,
-          normalAdapterFactory: () => normal);
-      await expectLater(
-          run(adapter, method: scenario.$2), throwsA(same(scenario.$3)));
-      expect(compat.calls, 0);
-      adapter.close();
-    }
+    const error = HandshakeException('CERTIFICATE_VERIFY_FAILED');
+    final normal = _Normal()..failure = error;
+    final recovery = ImageEndpointRecovery();
+    final adapter = ImageTransferAdapter(
+        proxy: 'DIRECT',
+        skipCertificate: false,
+        recovery: recovery,
+        normalAdapterFactory: () => normal);
+    await expectLater(run(adapter), throwsA(same(error)));
+    expect(normal.calls, 1);
+    expect(recovery.shouldAvoid(_uri, 'DIRECT'), false);
+    expect(recovery.needsNewSource(error), false);
+    adapter.close();
   });
-  test('range, custom Host and request bodies cannot be silently changed',
+  test('proxy requests retain their error without a direct fallback', () async {
+    final normal = _Normal()..failure = _wrong;
+    final recovery = ImageEndpointRecovery();
+    final adapter = ImageTransferAdapter(
+        proxy: 'PROXY private:123',
+        skipCertificate: false,
+        recovery: recovery,
+        normalAdapterFactory: () => normal);
+    await expectLater(run(adapter), throwsA(same(_wrong)));
+    expect(normal.calls, 1);
+    expect(recovery.shouldAvoid(_uri, 'PROXY private:123'), true);
+    expect(recovery.shouldAvoid(_uri, 'DIRECT'), false);
+    adapter.close();
+  });
+  test(
+      'range, custom Host, method and request bodies reach normal IO unchanged',
       () async {
     for (final options in [
       RequestOptions(path: _uri.toString(), headers: {'Range': 'bytes=10-20'}),
       RequestOptions(
           path: _uri.toString(), headers: {'Host': 'mapped.example.test'}),
-      RequestOptions(path: _uri.toString(), data: 'body'),
+      RequestOptions(path: _uri.toString(), method: 'POST', data: 'body'),
     ]) {
-      final normal = _Normal()..failure = _wrong;
-      final compat = _Compat();
+      final normal = _Normal();
+      final stream = Stream.value(Uint8List.fromList([7, 8]));
       final adapter = ImageTransferAdapter(
           proxy: 'DIRECT',
-          skipCertificate: true,
+          skipCertificate: false,
           recovery: ImageEndpointRecovery(),
-          compatibility: compat,
           normalAdapterFactory: () => normal);
-      await expectLater(
-          adapter.fetch(options, null, null), throwsA(same(_wrong)));
-      expect(compat.calls, 0);
+      final response = await adapter.fetch(options, stream, null);
+      expect(await response.stream.expand((b) => b).toList(), [1, 2]);
+      expect(normal.options, same(options));
+      expect(normal.requestStream, same(stream));
+      expect(normal.calls, 1);
       adapter.close();
     }
   });
-  test('either feature can remain enabled while the other is disabled',
-      () async {
-    for (final compatibilityOnly in [true, false]) {
-      final normal = _Normal()..failure = _wrong;
-      final compat = _Compat();
-      final adapter = ImageTransferAdapter(
-          proxy: 'DIRECT',
-          skipCertificate: true,
-          recovery: ImageEndpointRecovery(
-              fastFailover: !compatibilityOnly,
-              sniCompatibility: compatibilityOnly),
-          compatibility: compat,
-          normalAdapterFactory: () => normal);
-      if (compatibilityOnly) {
-        expect(await run(adapter), [3, 4]);
-        expect(await run(adapter), [3, 4]);
-        expect(compat.calls, 2);
-      } else {
-        await expectLater(run(adapter), throwsA(same(_wrong)));
-        await expectLater(
-            run(adapter), throwsA(isA<ImageEndpointUnavailable>()));
-        expect(compat.calls, 0);
-      }
-      adapter.close();
-    }
-  });
-  test('cancellation after normal failure must not start compatibility',
+  test('cancellation after normal failure does not quarantine the endpoint',
       () async {
     final cancel = Completer<void>();
     final normal = _Normal()
@@ -235,20 +194,30 @@ void main() {
         cancel.complete();
         await Future<void>.delayed(Duration.zero);
       };
-    final compat = _Compat();
+    final recovery = ImageEndpointRecovery();
     final adapter = ImageTransferAdapter(
         proxy: 'DIRECT',
         skipCertificate: false,
-        recovery: ImageEndpointRecovery(),
-        compatibility: compat,
+        recovery: recovery,
         normalAdapterFactory: () => normal);
     await expectLater(
         adapter.fetch(
             RequestOptions(path: _uri.toString()), null, cancel.future),
         throwsA(
             isA<DioException>().having(CancelToken.isCancel, 'cancel', true)));
-    expect(compat.calls, 0);
+    expect(normal.calls, 1);
+    expect(recovery.shouldAvoid(_uri, 'DIRECT'), false);
     adapter.close();
+  });
+  test('closed adapter cannot start another connection', () async {
+    final normal = _Normal();
+    final adapter = ImageTransferAdapter(
+        proxy: 'DIRECT',
+        skipCertificate: false,
+        normalAdapterFactory: () => normal);
+    adapter.close();
+    await expectLater(run(adapter), throwsA(isA<StateError>()));
+    expect(normal.calls, 0);
   });
   test(
       'preload changes source only once, and reruns the same cache-first loader',
@@ -261,7 +230,9 @@ void main() {
     int loads = 0, sources = 0;
     final result = await preloadWithSourceRecovery(first, load: (item) async {
       loads++;
-      if (loads == 1) throw _wrong;
+      if (loads == 1) {
+        throw _wrong;
+      }
     }, changeSource: (item) async {
       sources++;
       return item.copyWith(imageUrl: 'https://good.hath.network/1'.oN);
@@ -286,10 +257,15 @@ class _Normal implements HttpClientAdapter {
   Object? failure;
   Future<void> Function()? beforeFailure;
   int calls = 0;
+  int closes = 0;
+  RequestOptions? options;
+  Stream<Uint8List>? requestStream;
   @override
   Future<ResponseBody> fetch(RequestOptions options,
       Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async {
     calls++;
+    this.options = options;
+    this.requestStream = requestStream;
     if (failure != null) {
       await beforeFailure?.call();
       throw failure!;
@@ -298,22 +274,7 @@ class _Normal implements HttpClientAdapter {
   }
 
   @override
-  void close({bool force = false}) {}
-}
-
-class _Compat implements SniCompatibilityTransport {
-  int calls = 0;
-  Object? failure;
-  @override
-  bool get supported => true;
-  @override
-  Future<ResponseBody> fetch(
-      RequestOptions options, Future<void>? cancelFuture) async {
-    calls++;
-    if (failure != null) throw failure!;
-    return ResponseBody(Stream.value(Uint8List.fromList([3, 4])), 200);
+  void close({bool force = false}) {
+    closes++;
   }
-
-  @override
-  void close() {}
 }

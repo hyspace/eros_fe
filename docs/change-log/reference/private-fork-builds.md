@@ -22,14 +22,14 @@
 
 - 已合入 `fix/reuse-reader-cache` 的普通下载缓存复用及自动重试修复。
 - 已合入 `fix/handshake-recovery` 的有界恢复、正确的超时单位及手动重试控制。
-- 已合入 `fix/reader-cache-representation` 的实际尺寸缓存键、快速换源与
-  可独立关闭的 Android SNI 兼容层；兼容层并不是全局关闭 TLS/SNI。
+- 已合入 `fix/reader-cache-representation` 的实际尺寸缓存键与快速换源。
+  后续 010 移除 Android 无 SNI 后备，保留缓存复用和通用恢复逻辑。
 - 新增的本地恢复／检查点导出功能保存在 `feat/local-backup-export`，
   暂未合入主线；需要时再独立整合。
 - 普通主包默认不开启 `FE_DOWNLOAD_DIAGNOSTICS`。排查时可通过
   `--dart-define=FE_DOWNLOAD_DIAGNOSTICS=true` 构建诊断版本。
-- 临时恢复策略的独立开关和移除方法见
-  [端点兼容层](image-endpoint-compatibility.md)；逐次实现和验证见
+- 保留的快速换源开关和安全边界见
+  [端点恢复](image-endpoint-compatibility.md)；逐次实现和验证见
   [变更索引](../README.md)。
 
 本机私有签名、服务配置和具体构建产物由本机保管；不将解密配置、

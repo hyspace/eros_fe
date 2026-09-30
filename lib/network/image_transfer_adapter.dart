@@ -4,7 +4,6 @@ import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:eros_fe/common/controller/download/download_diagnostics.dart';
 import 'package:eros_fe/network/image_endpoint_recovery.dart';
-import 'package:eros_fe/network/native_sni_compatibility.dart';
 import 'package:flutter_socks_proxy/socks_proxy.dart';
 
 /// Owns each image's HTTP client so aborting one request never aborts another.
@@ -16,15 +15,12 @@ class ImageTransferAdapter implements HttpClientAdapter {
     required this.proxy,
     required this.skipCertificate,
     ImageEndpointRecovery? recovery,
-    SniCompatibilityTransport? compatibility,
     this.normalAdapterFactory,
     this.diagnostics,
-  })  : recovery = recovery ?? imageEndpointRecovery,
-        compatibility = compatibility ?? NativeSniCompatibility();
+  }) : recovery = recovery ?? imageEndpointRecovery;
   final String proxy;
   final bool skipCertificate;
   final ImageEndpointRecovery recovery;
-  final SniCompatibilityTransport compatibility;
   final HttpClientAdapter Function()? normalAdapterFactory;
   final DownloadDiagnostics? diagnostics;
   final _active = <HttpClientAdapter>{};
@@ -64,33 +60,6 @@ class ImageTransferAdapter implements HttpClientAdapter {
       checkCancelled();
       if (!ImageEndpointRecovery.wrongVersion(error)) {
         rethrow;
-      }
-      if (recovery.canUseCompatibility(options.uri, proxy) &&
-          compatibility.supported &&
-          options.method == 'GET' &&
-          requestStream == null &&
-          options.data == null &&
-          !options.headers.keys.any(
-              (key) => const {'range', 'host'}.contains(key.toLowerCase()))) {
-        record('sni_compat_start', DownloadDiagnostics.failure(error));
-        try {
-          final response = await compatibility.fetch(options, cancelFuture);
-          checkCancelled();
-          record('sni_compat_headers', {
-            'adapter': 'android_no_sni',
-            'http_status': response.statusCode,
-          });
-          return response;
-        } catch (compatibilityError) {
-          checkCancelled();
-          if (compatibilityError is DioException &&
-              CancelToken.isCancel(compatibilityError)) {
-            rethrow;
-          }
-          record('sni_compat_failed', {
-            'exception': compatibilityError.runtimeType.toString(),
-          });
-        }
       }
       recovery.failed(options.uri, proxy);
       if (recovery.shouldAvoid(options.uri, proxy)) {
@@ -154,7 +123,6 @@ class ImageTransferAdapter implements HttpClientAdapter {
   @override
   void close({bool force = false}) {
     _closed = true;
-    compatibility.close();
     for (final adapter in _active.toList()) {
       adapter.close(force: true);
     }

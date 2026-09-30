@@ -4,23 +4,19 @@ import 'package:dio/dio.dart';
 
 const imageFastFailoverEnabled =
     bool.fromEnvironment('FE_IMAGE_FAST_FAILOVER', defaultValue: true);
-const imageSniCompatibilityEnabled =
-    bool.fromEnvironment('FE_IMAGE_SNI_COMPAT', defaultValue: true);
 
 /// Temporary, exact-endpoint avoidance, not a persistent domain blacklist.
-/// A normal TLS request is tried again after expiry, including after a server
-/// upgrade. Proxy routes are isolated and no URL paths/credentials are logged.
+/// Normal TLS is retried after expiry, allowing endpoint or network recovery.
+/// Proxy routes are isolated and no URL paths/credentials are logged.
 class ImageEndpointRecovery {
   ImageEndpointRecovery({
     this.fastFailover = imageFastFailoverEnabled,
-    this.sniCompatibility = imageSniCompatibilityEnabled,
     this.cooldown = const Duration(seconds: 60),
     this.capacity = 128,
     DateTime Function()? now,
   }) : _now = now ?? DateTime.now;
 
   final bool fastFailover;
-  final bool sniCompatibility;
   final Duration cooldown;
   final int capacity;
   final DateTime Function() _now;
@@ -71,14 +67,6 @@ class ImageEndpointRecovery {
       _failed[_key(uri, proxy)] = _now().add(cooldown);
     }
   }
-
-  bool canUseCompatibility(Uri uri, String proxy) =>
-      sniCompatibility &&
-      proxy.trim().toUpperCase() == 'DIRECT' &&
-      uri.scheme == 'https' &&
-      uri.port == 443 &&
-      uri.userInfo.isEmpty &&
-      uri.host.endsWith('.hath.network');
 }
 
 final imageEndpointRecovery = ImageEndpointRecovery();

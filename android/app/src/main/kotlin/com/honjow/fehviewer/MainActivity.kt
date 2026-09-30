@@ -9,10 +9,8 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugins.GeneratedPluginRegistrant
 import dev.darttools.flutter_android_volume_keydown.FlutterAndroidVolumeKeydownFragmentActivity
-import com.honjow.fehviewer.imagetransport.ImageSniCompatibilityChannel
 
 class MainActivity: FlutterAndroidVolumeKeydownFragmentActivity() {
-    private var imageSniCompatibility: ImageSniCompatibilityChannel? = null
     override fun onCreate(savedInstanceState: Bundle?) {
 
         if (intent.getIntExtra("org.chromium.chrome.extra.TASK_ID", -1) == this.taskId) {
@@ -35,12 +33,5 @@ class MainActivity: FlutterAndroidVolumeKeydownFragmentActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine);
-        imageSniCompatibility = ImageSniCompatibilityChannel(flutterEngine.dartExecutor.binaryMessenger)
-    }
-
-    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
-        imageSniCompatibility?.close()
-        imageSniCompatibility = null
-        super.cleanUpFlutterEngine(flutterEngine)
     }
 }
